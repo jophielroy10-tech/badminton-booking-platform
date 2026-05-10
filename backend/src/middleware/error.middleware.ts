@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import { ZodError } from "zod";
+import { inspect } from "node:util";
 import { env } from "../config/env.js";
 
 export class AppError extends Error {
@@ -12,30 +13,50 @@ export class AppError extends Error {
   }
 }
 
+function getErrorMessage(err: unknown) {
+  if (err instanceof Error) return err.message;
+
+  if (typeof err === "string") return err;
+
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
+function getErrorDetails(err: unknown) {
+  if (err instanceof Error) {
+    return {
+      name: err.name,
+      message: err.message,
+      stack: err.stack,
+      raw: inspect(err, { depth: 6 })
+    };
+  }
+
+  return {
+    name: "UnknownError",
+    message: getErrorMessage(err),
+    stack: undefined,
+    raw: inspect(err, { depth: 10 })
+  };
+}
+
 export const errorMiddleware = (
   err: unknown,
   req: Request,
   res: Response,
   _next: NextFunction
 ) => {
-  const errorInfo =
-    err instanceof Error
-      ? {
-          name: err.name,
-          message: err.message,
-          stack: err.stack
-        }
-      : {
-          name: "UnknownError",
-          message: String(err),
-          stack: undefined
-        };
+  const errorDetails = getErrorDetails(err);
 
   // This prints the real backend error in Render Logs.
   console.error("GLOBAL_ERROR:", {
     method: req.method,
     path: req.originalUrl,
-    ...errorInfo,
+    body: req.body,
+    ...errorDetails,
     prismaCode:
       err instanceof Prisma.PrismaClientKnownRequestError ? err.code : undefined,
     prismaMeta:
@@ -83,9 +104,7 @@ export const errorMiddleware = (
   const message =
     env.NODE_ENV === "production"
       ? "Internal server error"
-      : err instanceof Error
-        ? err.message
-        : "Internal server error";
+      : getErrorMessage(err) || "Internal server error";
 
   return res.status(500).json({
     success: false,
