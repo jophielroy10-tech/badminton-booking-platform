@@ -243,6 +243,13 @@ export const updateOwnerCourt = async (req: Request, res: Response) => {
   const mobileChanged = nextContactMobile !== court.contactMobile;
   const qrChanged = Boolean(upiQrImage);
   if (req.body.mapUrl && !/^https?:\/\/.+/i.test(String(req.body.mapUrl))) throw new AppError("Valid map URL is required", 400);
+  const upiQrUpdate = upiQrImage
+    ? (() => {
+        const qrUrl = uploadedUpiQrUrl(req, upiQrImage);
+        if (!qrUrl) throw new AppError("QR image upload failed. Please upload JPG, PNG, or WEBP.", 400);
+        return { upiQrImageUrl: qrUrl, upiUpdatedAt: new Date(), upiUpdatedBy: req.user!.id };
+      })()
+    : {};
 
   const data = await prisma.court.update({
     where: { id: court.id },
@@ -270,7 +277,7 @@ export const updateOwnerCourt = async (req: Request, res: Response) => {
       approvedAt: null,
       approvedBy: null,
       ...(nextUpiId !== undefined ? { upiId: nextUpiId, upiUpdatedAt: new Date(), upiUpdatedBy: req.user!.id } : {}),
-      ...(upiQrImage ? { upiQrImageUrl: uploadedUpiQrUrl(req, upiQrImage), upiUpdatedAt: new Date(), upiUpdatedBy: req.user!.id } : {})
+      ...upiQrUpdate
     }
   });
 
@@ -281,14 +288,19 @@ export const updateOwnerCourt = async (req: Request, res: Response) => {
         await tx.courtImage.updateMany({ where: { courtId: court.id }, data: { isPrimary: false } });
       }
       const shouldPrimaryFirst = replacePrimaryImage || !existingPrimary;
+      const imageCreateData = courtImageFiles.map((file, index) => {
+        const imageUrl = uploadedCourtImageUrl(req, file);
+        if (!imageUrl) throw new AppError("Court image upload failed. Please upload JPG, PNG, or WEBP.", 400);
+        return {
+          courtId: court.id,
+          imageUrl,
+          isPrimary: shouldPrimaryFirst && index === 0
+        };
+      });
       const created = await Promise.all(
-        courtImageFiles.map((file, index) =>
+        imageCreateData.map((data) =>
           tx.courtImage.create({
-            data: {
-              courtId: court.id,
-              imageUrl: uploadedCourtImageUrl(req, file),
-              isPrimary: shouldPrimaryFirst && index === 0
-            }
+            data
           })
         )
       );
