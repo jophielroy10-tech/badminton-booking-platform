@@ -10,6 +10,7 @@ import { AppError } from "./error.middleware.js";
 const courtUploadRoot = path.resolve(process.cwd(), "uploads", "courts");
 const qrUploadRoot = path.resolve(process.cwd(), "uploads", "qr");
 const legacyUpiUploadRoot = path.resolve(process.cwd(), "uploads", "upi");
+
 fs.mkdirSync(courtUploadRoot, { recursive: true });
 fs.mkdirSync(qrUploadRoot, { recursive: true });
 fs.mkdirSync(legacyUpiUploadRoot, { recursive: true });
@@ -25,17 +26,45 @@ const allowedMimeTypes = new Set([
   "image/heif"
 ]);
 
-const allowedExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif", ".heic", ".heif"]);
+const allowedExtensions = new Set([
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".webp",
+  ".gif",
+  ".bmp",
+  ".avif",
+  ".heic",
+  ".heif"
+]);
+
 const conversionExtensions = new Set([".bmp", ".heic", ".heif"]);
-const courtImageMaxBytes = 5 * 1024 * 1024;
-const qrImageMaxBytes = 3 * 1024 * 1024;
+
+const courtImageMaxBytes = 5 * 1024 * 1024; // 5 MB
+const qrImageMaxBytes = 3 * 1024 * 1024; // 3 MB
 
 function isQrField(fieldname: string) {
   return ["upiQrImage", "qrImage", "platformQrImage"].includes(fieldname);
 }
 
+function isRemoteUrl(value?: string) {
+  return Boolean(value && /^https?:\/\//i.test(value));
+}
+
+function removeLocalFileIfExists(filePath?: string) {
+  if (!filePath || isRemoteUrl(filePath)) return;
+
+  try {
+    fs.rmSync(filePath, { force: true });
+  } catch {
+    // Ignore cleanup errors because upload validation error is more important.
+  }
+}
+
 const localStorage = multer.diskStorage({
-  destination: (_req, file, cb) => cb(null, isQrField(file.fieldname) ? qrUploadRoot : courtUploadRoot),
+  destination: (_req, file, cb) => {
+    cb(null, isQrField(file.fieldname) ? qrUploadRoot : courtUploadRoot);
+  },
   filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
     cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
@@ -46,11 +75,18 @@ const cloudinaryStorage = new CloudinaryStorage({
   cloudinary,
   params: async (_req: Request, file: Express.Multer.File) => {
     const ext = path.extname(file.originalname).toLowerCase().replace(".", "");
+
     return {
       folder: isQrField(file.fieldname) ? "badminton/qr" : "badminton/courts",
       resource_type: "image",
-      allowed_formats: Array.from(allowedExtensions).map((value) => value.replace(".", "")),
-      format: conversionExtensions.has(`.${ext}`) ? (isQrField(file.fieldname) ? "png" : "webp") : undefined,
+      allowed_formats: Array.from(allowedExtensions).map((value) =>
+        value.replace(".", "")
+      ),
+      format: conversionExtensions.has(`.${ext}`)
+        ? isQrField(file.fieldname)
+          ? "png"
+          : "webp"
+        : undefined,
       public_id: `${Date.now()}-${Math.round(Math.random() * 1e9)}`
     };
   }
@@ -58,11 +94,18 @@ const cloudinaryStorage = new CloudinaryStorage({
 
 const storage = isCloudinaryConfigured ? cloudinaryStorage : localStorage;
 
-if (process.env.NODE_ENV !== "production") {
-  console.log(isCloudinaryConfigured ? "Cloudinary upload storage enabled" : "Local upload storage enabled");
-}
+// Important: log this even in production so Render tells us whether Cloudinary is active.
+console.log(
+  isCloudinaryConfigured
+    ? "Cloudinary upload storage enabled"
+    : "Local upload storage enabled"
+);
 
-function imageFileFilter(_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) {
+function imageFileFilter(
+  _req: Request,
+  file: Express.Multer.File,
+  cb: multer.FileFilterCallback
+) {
   const ext = path.extname(file.originalname).toLowerCase();
 
   if (!allowedMimeTypes.has(file.mimetype) || !allowedExtensions.has(ext)) {
@@ -75,7 +118,11 @@ function imageFileFilter(_req: Request, file: Express.Multer.File, cb: multer.Fi
 
 function flattenUploadedFiles(req: Request) {
   if (!req.files) return req.file ? [req.file] : [];
-  if (Array.isArray(req.files)) return req.files;
+
+  if (Array.isArray(req.files)) {
+    return req.files;
+  }
+
   return Object.values(req.files).flat();
 }
 
@@ -84,8 +131,12 @@ function replaceExtension(filename: string, ext: string) {
 }
 
 async function convertUploadedFile(file: Express.Multer.File) {
-  if (!file.path || /^https?:\/\//i.test(file.path)) return;
+  // Cloudinary uploads already return a remote URL in file.path.
+  // Do not run Sharp or fs operations on remote URLs.
+  if (!file.path || isRemoteUrl(file.path)) return;
+
   const ext = path.extname(file.filename).toLowerCase();
+
   if (!conversionExtensions.has(ext)) return;
 
   const nextExt = isQrField(file.fieldname) ? ".png" : ".webp";
@@ -94,47 +145,98 @@ async function convertUploadedFile(file: Express.Multer.File) {
 
   try {
     const pipeline = sharp(file.path).rotate();
+
     if (isQrField(file.fieldname)) {
-      await pipeline.resize({ width: 1200, height: 1200, fit: "inside", withoutEnlargement: true }).png({ compressionLevel: 6 }).toFile(nextPath);
+      await pipeline
+        .resize({
+          width: 1200,
+          height: 1200,
+          fit: "inside",
+          withoutEnlargement: true
+        })
+        .png({ compressionLevel: 6 })
+        .toFile(nextPath);
+
       file.mimetype = "image/png";
     } else {
-      await pipeline.resize({ width: 1600, fit: "inside", withoutEnlargement: true }).webp({ quality: 80 }).toFile(nextPath);
+      await pipeline
+        .resize({
+          width: 1600,
+          fit: "inside",
+          withoutEnlargement: true
+        })
+        .webp({ quality: 80 })
+        .toFile(nextPath);
+
       file.mimetype = "image/webp";
     }
   } catch {
-    fs.rmSync(file.path, { force: true });
-    throw new AppError("HEIC images are not supported by this server. Please upload JPG, PNG, or WEBP.", 400);
+    removeLocalFileIfExists(file.path);
+    throw new AppError(
+      "HEIC images are not supported by this server. Please upload JPG, PNG, or WEBP.",
+      400
+    );
   }
 
-  fs.rmSync(file.path, { force: true });
+  removeLocalFileIfExists(file.path);
+
   file.filename = nextFilename;
   file.path = nextPath;
   file.destination = path.dirname(nextPath);
   file.size = fs.statSync(nextPath).size;
 }
 
-export async function processUploadedImages(req: Request, _res: Response, next: NextFunction) {
+export async function processUploadedImages(
+  req: Request,
+  _res: Response,
+  next: NextFunction
+) {
   try {
     for (const file of flattenUploadedFiles(req)) {
-      const maxBytes = isQrField(file.fieldname) ? qrImageMaxBytes : courtImageMaxBytes;
+      const maxBytes = isQrField(file.fieldname)
+        ? qrImageMaxBytes
+        : courtImageMaxBytes;
+
       if (file.size && file.size > maxBytes) {
-        fs.rmSync(file.path, { force: true });
-        throw new AppError(isQrField(file.fieldname) ? "QR image size must be below 3 MB." : "Image size must be below 5 MB.", 400);
+        removeLocalFileIfExists(file.path);
+
+        throw new AppError(
+          isQrField(file.fieldname)
+            ? "QR image size must be below 3 MB."
+            : "Image size must be below 5 MB.",
+          400
+        );
       }
+
       await convertUploadedFile(file);
+
       if (file.size && file.size > maxBytes) {
-        fs.rmSync(file.path, { force: true });
-        throw new AppError(isQrField(file.fieldname) ? "QR image size must be below 3 MB." : "Image size must be below 5 MB.", 400);
+        removeLocalFileIfExists(file.path);
+
+        throw new AppError(
+          isQrField(file.fieldname)
+            ? "QR image size must be below 3 MB."
+            : "Image size must be below 5 MB.",
+          400
+        );
       }
-      if (process.env.NODE_ENV !== "production") {
-        const savedUrl = getUploadedFileUrl(file, isQrField(file.fieldname) ? "qr" : "court");
-        console.log("[upload]", {
-          originalName: file.originalname,
-          savedUrlType: savedUrl?.startsWith("http://") || savedUrl?.startsWith("https://") || savedUrl?.includes("res.cloudinary.com") ? "CLOUDINARY" : "LOCAL",
-          savedUrl
-        });
-      }
+
+      const savedUrl = getUploadedFileUrl(
+        file,
+        isQrField(file.fieldname) ? "qr" : "court"
+      );
+
+      // Important production debug log for Render.
+      console.log("[upload]", {
+        fieldname: file.fieldname,
+        originalName: file.originalname,
+        mimetype: file.mimetype,
+        size: file.size,
+        storageMode: isCloudinaryConfigured ? "cloudinary" : "local",
+        savedUrl
+      });
     }
+
     next();
   } catch (error) {
     next(error);
@@ -147,11 +249,40 @@ export const courtImageUpload = multer({
   limits: { fileSize: courtImageMaxBytes }
 });
 
-export function getUploadedFileUrl(file: Express.Multer.File | undefined, type: "court" | "qr") {
+export function getUploadedFileUrl(
+  file: Express.Multer.File | undefined,
+  type: "court" | "qr"
+) {
   if (!file) return null;
-  if (file.path && /^https?:\/\//i.test(file.path)) return file.path;
-  if (file.path?.includes("res.cloudinary.com")) return file.path;
-  if (file.filename) return type === "qr" ? `/uploads/qr/${file.filename}` : `/uploads/courts/${file.filename}`;
+
+  const uploadedFile = file as Express.Multer.File & {
+    path?: string;
+    secure_url?: string;
+    url?: string;
+    filename?: string;
+  };
+
+  // Cloudinary usually stores uploaded image URL in file.path.
+  if (uploadedFile.path && isRemoteUrl(uploadedFile.path)) {
+    return uploadedFile.path;
+  }
+
+  // Extra safety for different Cloudinary response formats.
+  if (uploadedFile.secure_url && isRemoteUrl(uploadedFile.secure_url)) {
+    return uploadedFile.secure_url;
+  }
+
+  if (uploadedFile.url && isRemoteUrl(uploadedFile.url)) {
+    return uploadedFile.url;
+  }
+
+  // Local fallback for development.
+  if (uploadedFile.filename) {
+    return type === "qr"
+      ? `/uploads/qr/${uploadedFile.filename}`
+      : `/uploads/courts/${uploadedFile.filename}`;
+  }
+
   return null;
 }
 
