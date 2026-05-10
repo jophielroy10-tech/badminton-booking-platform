@@ -31,7 +31,7 @@ export const errorMiddleware = (
           stack: undefined
         };
 
-  // This will print the real error in Render Logs
+  // This prints the real backend error in Render Logs.
   console.error("GLOBAL_ERROR:", {
     method: req.method,
     path: req.originalUrl,
