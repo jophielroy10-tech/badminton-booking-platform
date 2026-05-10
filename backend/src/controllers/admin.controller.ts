@@ -474,7 +474,7 @@ export const approveCourt = async (req: any, res: any) => {
   const existing = await prisma.court.findUnique({ where: { id: req.params.id } });
   if (!existing) throw new AppError("Court not found", 404);
   if (existing.deletedAt) throw new AppError("Deleted courts cannot be approved", 400);
-  if (!existing.upiId) {
+  if (!existing.upiId || !existing.upiQrImageUrl) {
     await createAuditLog({
       userId: req.user.id,
       action: AUDIT_ACTIONS.ADMIN_BLOCKED_COURT_APPROVAL_MISSING_UPI,
@@ -483,39 +483,57 @@ export const approveCourt = async (req: any, res: any) => {
       metadata: { courtName: existing.name, hasUpiId: Boolean(existing.upiId), hasUpiQrImage: Boolean(existing.upiQrImageUrl) },
       req
     });
-    throw new AppError("Cannot approve court without owner UPI ID", 400);
+    throw new AppError("Cannot approve court without owner UPI ID and QR code", 400);
   }
-  const result = await prisma.$transaction(async (tx) => {
-    const data = await tx.court.update({
-      where: { id: req.params.id },
-      data: {
-        isApproved: true,
-        status: "ACTIVE",
-        approvedAt: new Date(),
-        approvedBy: req.user.id,
-        rejectionReason: null
-      }
-    });
-    const slotResult = data.defaultScheduleEnabled ? await generateSlotsForCourtSchedule(tx, data) : { createdCount: 0, skippedCount: 0 };
-    return { data, slotResult };
+  const approvedCourt = await prisma.court.update({
+    where: { id: existing.id },
+    data: {
+      isApproved: true,
+      status: CourtStatus.ACTIVE,
+      approvedAt: new Date(),
+      approvedBy: req.user.id,
+      rejectionReason: null
+    }
   });
+
+  let generatedSlotCount = 0;
+  let skippedSlotCount = 0;
+  let slotGenerationWarning: string | null = null;
+
+  if (approvedCourt.defaultScheduleEnabled) {
+    try {
+      const slotResult = await generateSlotsForCourtSchedule(prisma, approvedCourt);
+      generatedSlotCount = slotResult.createdCount ?? 0;
+      skippedSlotCount = slotResult.skippedCount ?? 0;
+    } catch (error) {
+      console.error("[admin approve court] slot generation failed", { courtId: approvedCourt.id, adminId: req.user?.id, error });
+      slotGenerationWarning = "Court approved, but slot generation failed. Generate slots manually or retry.";
+    }
+  }
+
   await createAuditLog({
     userId: req.user.id,
     action: AUDIT_ACTIONS.ADMIN_APPROVED_COURT,
     entity: "court",
-    entityId: result.data.id,
-    metadata: { courtName: result.data.name, generatedSlotCount: result.slotResult.createdCount },
+    entityId: approvedCourt.id,
+    metadata: { courtName: approvedCourt.name, generatedSlotCount },
     req
   });
-  await createAuditLog({
-    userId: req.user.id,
-    action: AUDIT_ACTIONS.ADMIN_APPROVED_COURT_AND_GENERATED_SLOTS,
-    entity: "court",
-    entityId: result.data.id,
-    metadata: { courtName: result.data.name, generatedSlotCount: result.slotResult.createdCount, skippedSlotCount: result.slotResult.skippedCount },
-    req
+  if (approvedCourt.defaultScheduleEnabled && !slotGenerationWarning) {
+    await createAuditLog({
+      userId: req.user.id,
+      action: AUDIT_ACTIONS.ADMIN_APPROVED_COURT_AND_GENERATED_SLOTS,
+      entity: "court",
+      entityId: approvedCourt.id,
+      metadata: { courtName: approvedCourt.name, generatedSlotCount, skippedSlotCount },
+      req
+    });
+  }
+  res.json({
+    success: true,
+    message: slotGenerationWarning ? "Court approved, but slot generation failed" : "Court approved successfully",
+    data: { ...approvedCourt, generatedSlotCount, slotGenerationWarning }
   });
-  res.json({ success: true, message: "Court approved successfully", data: { ...result.data, generatedSlotCount: result.slotResult.createdCount } });
 };
 
 export const updateCourtUpiDetails = async (req: any, res: any) => {
@@ -525,11 +543,18 @@ export const updateCourtUpiDetails = async (req: any, res: any) => {
 
   const upiId = normalizeUpiId(req.body.upiId);
   const file = req.file as Express.Multer.File | undefined;
+  const qrUpdate = file
+    ? (() => {
+        const qrUrl = uploadedUpiQrUrl(req, file);
+        if (!qrUrl) throw new AppError("QR image upload failed. Please upload JPG, PNG, or WEBP.", 400);
+        return { upiQrImageUrl: qrUrl };
+      })()
+    : {};
   const data = await prisma.court.update({
     where: { id: court.id },
     data: {
       upiId,
-      ...(file ? { upiQrImageUrl: uploadedUpiQrUrl(req, file) } : {}),
+      ...qrUpdate,
       upiUpdatedAt: new Date(),
       upiUpdatedBy: req.user.id
     }
@@ -568,7 +593,7 @@ export const rejectCourt = async (req: any, res: any) => {
     where: { id: req.params.id },
     data: {
       isApproved: false,
-      status: "REJECTED",
+      status: CourtStatus.REJECTED,
       rejectionReason: reason,
       approvedAt: null,
       approvedBy: null
