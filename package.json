@@ -1,0 +1,22 @@
+{
+  "dependencies": {
+    "axios": "^1.16.0",
+    "express-rate-limit": "^8.4.1",
+    "framer-motion": "^12.38.0",
+    "helmet": "^8.1.0",
+    "morgan": "^1.10.1",
+    "multer": "^2.1.1",
+    "qrcode": "^1.5.4",
+    "qrcode.react": "^4.2.0",
+    "razorpay": "^2.9.6",
+    "react-hot-toast": "^2.6.0",
+    "uuid": "^14.0.0",
+    "zod": "^4.4.2"
+  },
+  "devDependencies": {
+    "@types/morgan": "^1.9.10",
+    "@types/multer": "^2.1.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/uuid": "^10.0.0"
+  }
+}

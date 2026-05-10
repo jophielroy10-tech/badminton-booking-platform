@@ -1,0 +1,466 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  OWNER
+  USER
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum CourtStatus {
+  PENDING_APPROVAL
+  ACTIVE
+  INACTIVE
+  MAINTENANCE
+  REJECTED
+}
+
+enum CourtType {
+  INDOOR
+  OUTDOOR
+}
+
+enum SlotStatus {
+  AVAILABLE
+  HOLD
+  BOOKED
+  BLOCKED
+}
+
+enum BookingStatus {
+  PENDING
+  PENDING_PAYMENT
+  CONFIRMED
+  CANCELLED
+  FAILED
+  EXPIRED
+  REFUNDED
+  COMPLETED
+}
+
+enum PaymentStatus {
+  PENDING
+  USER_SUBMITTED
+  SUCCESS
+  FAILED
+  OWNER_REJECTED
+  EXPIRED
+  REFUND_PENDING
+  REFUNDED
+}
+
+enum RefundStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  PROCESSED
+  FAILED
+}
+
+enum SettlementStatus {
+  PENDING
+  PROCESSING
+  PAID
+  FAILED
+  SUBMITTED
+  VERIFIED
+  REJECTED
+  OVERDUE
+}
+
+enum SettlementCycle {
+  DAILY
+  MONTHLY
+  MANUAL
+  TOTAL_PENDING
+}
+
+enum OwnerSettlementPaymentStatus {
+  NOT_PAID
+  SUBMITTED
+  VERIFIED
+  REJECTED
+}
+
+enum WalletTransactionType {
+  CREDIT
+  DEBIT
+}
+
+model User {
+  id                 String              @id @default(uuid())
+  name               String
+  email              String              @unique
+  password           String
+  role               Role                @default(USER)
+  status             UserStatus          @default(ACTIVE)
+  walletBalance      Decimal             @default(0) @db.Decimal(10, 2)
+  isSuspended        Boolean             @default(false)
+  deletedAt          DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  ownedCourts        Court[]             @relation("CourtOwner")
+  bookings           Booking[]
+  payments           Payment[]
+  walletTransactions WalletTransaction[]
+  reviews            Review[]
+  notifications      Notification[]
+  auditLogs          AuditLog[]          @relation("AuditActor")
+  refunds            Refund[]
+  ownerEarnings      OwnerEarning[]
+  ownerSettlements   OwnerSettlement[]
+  monthlySettlements OwnerMonthlySettlement[] @relation("OwnerMonthlySettlements")
+}
+
+model Court {
+  id          String        @id @default(uuid())
+  slug        String        @unique @default(uuid())
+  name        String
+  description String?
+  city        String
+  area        String?
+  address     String
+  contactMobile String?
+  type        CourtType     @default(INDOOR)
+  hasAC       Boolean       @default(false)
+  hasCoaching Boolean       @default(false)
+  openingTime String?
+  closingTime String?
+  mapUrl      String?
+  imageUrl    String?
+  pricePerHour Float
+  cancellationChargePercent Float @default(10)
+  defaultScheduleEnabled Boolean @default(true)
+  defaultSlotDurationMinutes Int @default(60)
+  slotGenerationDays Int @default(7)
+  rating      Decimal      @default(0) @db.Decimal(2, 1)
+  status      CourtStatus  @default(PENDING_APPROVAL)
+  isApproved  Boolean      @default(false)
+  rejectionReason String?
+  approvedAt  DateTime?
+  approvedBy  String?
+  upiId       String?
+  upiQrImageUrl String?
+  upiUpdatedAt DateTime?
+  upiUpdatedBy String?
+  deletedAt   DateTime?
+  ownerId     String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  owner       User         @relation("CourtOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  bookings    Booking[]
+  slots       Slot[]
+  reviews     Review[]
+  images      CourtImage[]
+  schedules   CourtSchedule[]
+  ownerEarnings OwnerEarning[]
+
+  @@index([city, area, status, isApproved, deletedAt])
+}
+
+model CourtSchedule {
+  id                  String   @id @default(uuid())
+  courtId             String
+  dayOfWeek           Int
+  isOpen              Boolean  @default(true)
+  openingTime         String   @default("09:00")
+  closingTime         String   @default("21:00")
+  slotDurationMinutes Int      @default(60)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  court               Court    @relation(fields: [courtId], references: [id], onDelete: Cascade)
+
+  @@unique([courtId, dayOfWeek])
+  @@index([courtId, isOpen])
+}
+
+model CourtImage {
+  id        String   @id @default(uuid())
+  courtId   String
+  imageUrl  String
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+  court     Court    @relation(fields: [courtId], references: [id], onDelete: Cascade)
+
+  @@index([courtId, isPrimary])
+}
+
+model Slot {
+  id         String      @id @default(uuid())
+  courtId    String
+  date       DateTime
+  startTime  DateTime
+  endTime    DateTime
+  price      Decimal     @db.Decimal(10, 2)
+  status     SlotStatus  @default(AVAILABLE)
+  lockedBy   String?
+  lockedUntil DateTime?
+  reason     String?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  court      Court       @relation(fields: [courtId], references: [id], onDelete: Cascade)
+  bookings   Booking[]
+
+  @@index([courtId, date, startTime, endTime, status])
+}
+
+model Booking {
+  id             String        @id @default(uuid())
+  userId         String
+  courtId        String
+  slotId         String
+  status         BookingStatus @default(PENDING)
+  expiresAt      DateTime?
+  idempotencyKey String        @unique
+  checkInOtp     String?
+  qrToken        String?
+  checkedIn      Boolean       @default(false)
+  checkedInAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  court          Court         @relation(fields: [courtId], references: [id], onDelete: Cascade)
+  slot           Slot          @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  payment        Payment?
+  refund         Refund?
+  ownerEarning   OwnerEarning?
+
+  @@index([slotId])
+  @@index([userId])
+  @@index([courtId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([userId, courtId, status, createdAt])
+}
+
+model Payment {
+  id                 String        @id @default(uuid())
+  bookingId          String       @unique
+  userId             String
+  amount             Decimal       @db.Decimal(10, 2)
+  platformFee        Decimal       @db.Decimal(10, 2)
+  gst                Decimal       @db.Decimal(10, 2)
+  discount           Decimal       @db.Decimal(10, 2) @default(0)
+  finalAmount        Decimal       @db.Decimal(10, 2)
+  currency           String        @default("INR")
+  status             PaymentStatus @default(PENDING)
+  provider           String        @default("RAZORPAY")
+  upiId              String?
+  upiQrImageUrl      String?
+  utrNumber          String?
+  ownerId            String?
+  userSubmittedAt    DateTime?
+  ownerVerifiedAt    DateTime?
+  ownerRejectedAt    DateTime?
+  ownerRejectionReason String?
+  razorpayOrderId    String?       @unique
+  razorpayPaymentId  String?
+  razorpaySignature  String?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  booking            Booking      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  refund             Refund?
+  ownerEarnings      OwnerEarning[]
+
+  @@index([userId, bookingId, status])
+  @@index([status, provider])
+  @@index([utrNumber])
+}
+
+model OTPVerification {
+  id        String   @id @default(uuid())
+  email     String
+  purpose   String
+  otpHash   String
+  attempts  Int      @default(0)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([email, purpose, createdAt])
+}
+
+model Refund {
+  id             String       @id @default(uuid())
+  paymentId      String       @unique
+  bookingId      String       @unique
+  amount         Decimal      @db.Decimal(10, 2)
+  cancellationCharge Decimal  @default(0) @db.Decimal(10, 2)
+  cancellationChargePercent Float @default(10)
+  status         RefundStatus @default(REQUESTED)
+  reason         String?
+  gatewayRefundId String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  payment        Payment      @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  booking        Booking      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String
+}
+
+model PlatformSetting {
+  id                 String   @id @default(uuid())
+  platformFee        Float    @default(20)
+  gstPercent         Float    @default(18)
+  commissionPercent  Float    @default(15)
+  penaltyCommissionPercent Float @default(20)
+  commissionDueWindowDays Int @default(5)
+  adminUpiId         String?
+  adminUpiName       String?
+  platformUpiId      String?
+  platformQrImageUrl String?
+  platformAccountName String?
+  cashPaymentEnabled Boolean  @default(false)
+  maintenanceMode    Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model OwnerMonthlySettlement {
+  id                 String           @id @default(uuid())
+  ownerId            String
+  month              Int
+  year               Int
+  monthlyRevenue     Float            @default(0)
+  commissionPercent  Float
+  commissionAmount   Float
+  penaltyApplied     Boolean          @default(false)
+  amountDue          Float
+  amountPaid         Float?
+  adminUpiIdSnapshot String?
+  paymentUtr         String?
+  paymentProofUrl    String?
+  status             SettlementStatus @default(PENDING)
+  submittedAt        DateTime?
+  verifiedAt         DateTime?
+  verifiedBy         String?
+  rejectedAt         DateTime?
+  rejectionReason    String?
+  dueDate            DateTime
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  owner              User             @relation("OwnerMonthlySettlements", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, month, year])
+  @@index([month, year, status])
+}
+
+model OwnerEarning {
+  id             String           @id @default(uuid())
+  ownerId        String
+  courtId        String?
+  bookingId      String           @unique
+  paymentId      String?
+  grossAmount    Decimal          @db.Decimal(10, 2)
+  platformFee    Decimal          @default(0) @db.Decimal(10, 2)
+  commission     Decimal          @db.Decimal(10, 2)
+  gst            Decimal          @default(0) @db.Decimal(10, 2)
+  netAmount      Decimal          @db.Decimal(10, 2)
+  status         SettlementStatus @default(PENDING)
+  settlementId   String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  owner          User             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  court          Court?           @relation(fields: [courtId], references: [id])
+  booking        Booking          @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  payment        Payment?         @relation(fields: [paymentId], references: [id])
+  settlement     OwnerSettlement? @relation(fields: [settlementId], references: [id])
+
+  @@index([ownerId, status, createdAt])
+  @@index([courtId, createdAt])
+  @@index([paymentId])
+  @@index([settlementId])
+}
+
+model OwnerSettlement {
+  id               String           @id @default(uuid())
+  ownerId          String
+  cycle            SettlementCycle
+  status           SettlementStatus @default(PENDING)
+  fromDate         DateTime
+  toDate           DateTime
+  grossAmount      Float
+  totalCommission  Float
+  totalPlatformFee Float            @default(0)
+  totalGst         Float            @default(0)
+  netAmount        Float
+  paidAt           DateTime?
+  paidBy           String?
+  settlementUtr    String?
+  note             String?
+  ownerPaymentUtr  String?
+  ownerPaymentProofUrl String?
+  ownerPaidAt      DateTime?
+  ownerPaymentStatus OwnerSettlementPaymentStatus @default(NOT_PAID)
+  ownerPaymentRejectionReason String?
+  ownerPaymentRejectedAt DateTime?
+  ownerPaymentVerifiedAt DateTime?
+  ownerPaymentVerifiedBy String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  owner            User             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  earnings         OwnerEarning[]
+
+  @@index([ownerId, status, createdAt])
+  @@index([cycle, status, fromDate, toDate])
+  @@index([ownerPaymentStatus, ownerPaidAt])
+  @@index([ownerPaymentUtr])
+}
+
+model WalletTransaction {
+  id        String                @id @default(uuid())
+  userId    String
+  amount    Decimal               @db.Decimal(10, 2)
+  type      WalletTransactionType
+  note      String?
+  createdAt DateTime              @default(now())
+  user      User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Review {
+  id        String   @id @default(uuid())
+  userId    String
+  courtId   String
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  court     Court    @relation(fields: [courtId], references: [id], onDelete: Cascade)
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  title     String
+  message   String
+  type      String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  metadata  Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  user      User?    @relation("AuditActor", fields: [userId], references: [id], onDelete: SetNull)
+}

@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: badminton_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: badminton
+    ports:
+      - "5432:5432"
+    volumes:
+      - badminton_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  badminton_postgres_data: 

@@ -1,0 +1,33 @@
+node_modules/
+dist/
+build/
+.next/
+out/
+
+.env
+.env.local
+.env.production
+.env.development
+
+coverage/
+logs/
+*.log
+npm-debug.log*
+
+*.db
+*.db-journal
+
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+backend/uploads/courts/*
+!backend/uploads/courts/.gitkeep
+
+backend/uploads/qr/*
+!backend/uploads/qr/.gitkeep
+
+# Editor files
+.vscode/
+
+# Old duplicate project - do not deploy
+badminton-booking-platform/
