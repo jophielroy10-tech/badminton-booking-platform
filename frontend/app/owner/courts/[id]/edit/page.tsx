@@ -41,6 +41,16 @@ export default function EditOwnerCourtPage() {
   const [saving, setSaving] = useState(false);
   const selectedImagePreviews = useMemo(() => courtImages.map((file) => URL.createObjectURL(file)), [courtImages]);
   const upiQrPreview = useMemo(() => (upiQrImage ? URL.createObjectURL(upiQrImage) : getImageUrl(court?.upiQrImageUrl) || ""), [upiQrImage, court?.upiQrImageUrl]);
+  const existingImages = useMemo<Array<{ id: string; imageUrl: string; isPrimary?: boolean }>>(() => {
+    if (!court) return [];
+    if (court.images?.length) return court.images;
+    return court.imageUrl ? [{ id: `legacy-${court.id}`, imageUrl: court.imageUrl, isPrimary: true }] : [];
+  }, [court]);
+  const primaryImageUrl = useMemo(() => {
+    if (selectedImagePreviews[0]) return selectedImagePreviews[0];
+    const primaryImage = existingImages.find((image) => image.isPrimary) ?? existingImages[0];
+    return getImageUrl(primaryImage?.imageUrl) || "";
+  }, [existingImages, selectedImagePreviews]);
 
   useEffect(() => () => selectedImagePreviews.forEach((src) => URL.revokeObjectURL(src)), [selectedImagePreviews]);
   useEffect(() => {
@@ -138,7 +148,8 @@ export default function EditOwnerCourtPage() {
       )}
       {error && <p className="mt-4 rounded-md bg-red-50 p-4 text-red-700">{error}</p>}
       {court && (
-        <form onSubmit={submit} className="mt-6 space-y-5 surface-card">
+        <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <form onSubmit={submit} className="space-y-5 surface-card">
           <section className="grid gap-4 md:grid-cols-2">
             <label className="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
               Court name
@@ -221,24 +232,6 @@ export default function EditOwnerCourtPage() {
               <input type="checkbox" checked={replacePrimaryImage} onChange={(event) => setReplacePrimaryImage(event.target.checked)} />
               Use first selected image as primary image
             </label>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {selectedImagePreviews.map((src, index) => (
-                <div key={src} className="relative h-40 overflow-hidden rounded-lg border border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900">
-                  <ImageWithFallback src={src} alt={`Selected court image ${index + 1}`} placeholder="Preview not available, but file can still be uploaded." />
-                </div>
-              ))}
-              {court.images?.map((image) => (
-                <div key={image.id} className="relative h-40 overflow-hidden rounded-lg border border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900">
-                  <ImageWithFallback src={getImageUrl(image.imageUrl)} alt={`${court.name} image`} />
-                  {image.isPrimary && <span className="absolute left-2 top-2 rounded-full bg-emerald-600 px-2 py-1 text-xs font-semibold text-white">Primary</span>}
-                </div>
-              ))}
-              {!selectedImagePreviews.length && !court.images?.length && (
-                <div className="h-40 overflow-hidden rounded-lg border border-dashed border-slate-300 dark:border-slate-700">
-                  <ImageWithFallback src={getImageUrl(court.imageUrl)} alt={court.name} />
-                </div>
-              )}
-            </div>
           </section>
 
           <section className="rounded-lg border border-slate-200 p-4 dark:border-slate-800">
@@ -288,6 +281,59 @@ export default function EditOwnerCourtPage() {
           <button className="btn-primary" type="submit" disabled={saving}>{saving ? "Saving..." : "Save Changes"}</button>
           {message && <p className="text-sm font-medium text-emerald-600">{message}</p>}
         </form>
+          <aside className="xl:sticky xl:top-24 xl:self-start">
+            <section className="surface-card space-y-3">
+              <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+                Court Image
+              </h2>
+
+              <div className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 dark:border-slate-800 dark:bg-slate-900">
+                <div className="aspect-video w-full overflow-hidden">
+                  <ImageWithFallback
+                    src={primaryImageUrl}
+                    alt="Court image"
+                    className="h-full w-full object-cover"
+                    fallbackText="No image uploaded"
+                  />
+                </div>
+              </div>
+
+              {existingImages.length > 0 && (
+                <div className="grid grid-cols-3 gap-2">
+                  {existingImages.map((image) => (
+                    <div key={image.id} className="relative aspect-square overflow-hidden rounded-lg border border-slate-200 bg-slate-100 dark:border-slate-700 dark:bg-slate-900">
+                      <ImageWithFallback
+                        src={getImageUrl(image.imageUrl) || ""}
+                        alt="Court thumbnail"
+                        className="h-full w-full object-cover"
+                        fallbackText=""
+                      />
+                      {image.isPrimary && (
+                        <span className="absolute left-1 top-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                          Primary
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {selectedImagePreviews.length > 0 && (
+                <div className="grid grid-cols-2 gap-2">
+                  {selectedImagePreviews.map((preview) => (
+                    <div key={preview} className="aspect-video overflow-hidden rounded-lg border border-slate-200 bg-slate-100 dark:border-slate-700 dark:bg-slate-900">
+                      <img
+                        src={preview}
+                        alt="Selected preview"
+                        className="h-full w-full object-cover"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </aside>
+        </div>
       )}
     </main>
   );
