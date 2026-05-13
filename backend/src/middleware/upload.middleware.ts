@@ -3,10 +3,26 @@ import path from "node:path";
 import type { NextFunction, Request, Response } from "express";
 import multer from "multer";
 import { CloudinaryStorage } from "multer-storage-cloudinary";
+import type { UploadApiOptions } from "cloudinary";
 import sharp from "sharp";
 import { cloudinary, isCloudinaryConfigured } from "../config/cloudinary.js";
 import { AppError } from "./error.middleware.js";
 
+/**
+ * Extended file type because Cloudinary storage can add remote URL fields.
+ */
+type UploadedImageFile = Express.Multer.File & {
+  secure_url?: string;
+  url?: string;
+  filename?: string;
+  path?: string;
+  destination?: string;
+};
+
+/**
+ * Local upload folders.
+ * These are used only when Cloudinary env variables are missing.
+ */
 const courtUploadRoot = path.resolve(process.cwd(), "uploads", "courts");
 const qrUploadRoot = path.resolve(process.cwd(), "uploads", "qr");
 const legacyUpiUploadRoot = path.resolve(process.cwd(), "uploads", "upi");
@@ -15,8 +31,12 @@ fs.mkdirSync(courtUploadRoot, { recursive: true });
 fs.mkdirSync(qrUploadRoot, { recursive: true });
 fs.mkdirSync(legacyUpiUploadRoot, { recursive: true });
 
+/**
+ * Accepted image MIME types.
+ */
 const allowedMimeTypes = new Set([
   "image/jpeg",
+  "image/jpg",
   "image/png",
   "image/webp",
   "image/gif",
@@ -26,6 +46,9 @@ const allowedMimeTypes = new Set([
   "image/heif"
 ]);
 
+/**
+ * Accepted image extensions.
+ */
 const allowedExtensions = new Set([
   ".jpg",
   ".jpeg",
@@ -38,6 +61,10 @@ const allowedExtensions = new Set([
   ".heif"
 ]);
 
+/**
+ * These formats may not display correctly in every browser,
+ * so local uploads are converted to PNG/WEBP where possible.
+ */
 const conversionExtensions = new Set([".bmp", ".heic", ".heif"]);
 
 const courtImageMaxBytes = 5 * 1024 * 1024; // 5 MB
@@ -47,7 +74,7 @@ function isQrField(fieldname: string) {
   return ["upiQrImage", "qrImage", "platformQrImage"].includes(fieldname);
 }
 
-function isRemoteUrl(value?: string) {
+function isRemoteUrl(value?: string | null) {
   return Boolean(value && /^https?:\/\//i.test(value));
 }
 
@@ -57,44 +84,54 @@ function removeLocalFileIfExists(filePath?: string) {
   try {
     fs.rmSync(filePath, { force: true });
   } catch {
-    // Ignore cleanup errors because upload validation error is more important.
+    // Ignore cleanup errors.
   }
 }
 
+/**
+ * Local disk storage fallback.
+ */
 const localStorage = multer.diskStorage({
   destination: (_req, file, cb) => {
     cb(null, isQrField(file.fieldname) ? qrUploadRoot : courtUploadRoot);
   },
   filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
+    const ext = path.extname(file.originalname || "").toLowerCase();
     cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
   }
 });
 
+/**
+ * Cloudinary storage.
+ * Used only when CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY,
+ * and CLOUDINARY_API_SECRET exist.
+ */
 const cloudinaryStorage = new CloudinaryStorage({
   cloudinary,
   params: async (_req: Request, file: Express.Multer.File) => {
-    const ext = path.extname(file.originalname).toLowerCase().replace(".", "");
+    const originalExt = path.extname(file.originalname || "").toLowerCase();
 
-    return {
+    const baseParams: UploadApiOptions = {
       folder: isQrField(file.fieldname) ? "badminton/qr" : "badminton/courts",
       resource_type: "image",
       allowed_formats: Array.from(allowedExtensions).map((value) =>
         value.replace(".", "")
       ),
-      format: conversionExtensions.has(`.${ext}`)
-        ? isQrField(file.fieldname)
-          ? "png"
-          : "webp"
-        : undefined,
       public_id: `${Date.now()}-${Math.round(Math.random() * 1e9)}`
     };
+
+    // Only convert problematic formats.
+    // Do not send format: undefined to Cloudinary.
+    if (conversionExtensions.has(originalExt)) {
+      baseParams.format = isQrField(file.fieldname) ? "png" : "webp";
+    }
+
+    return baseParams;
   }
-} as any);
+});
 
 const storage = isCloudinaryConfigured ? cloudinaryStorage : localStorage;
 
-// Important: log this even in production so Render tells us whether Cloudinary is active.
 console.log(
   isCloudinaryConfigured
     ? "Cloudinary upload storage enabled"
@@ -106,17 +143,22 @@ function imageFileFilter(
   file: Express.Multer.File,
   cb: multer.FileFilterCallback
 ) {
-  const ext = path.extname(file.originalname).toLowerCase();
+  const ext = path.extname(file.originalname || "").toLowerCase();
 
   if (!allowedMimeTypes.has(file.mimetype) || !allowedExtensions.has(ext)) {
-    cb(new AppError("Only image files are allowed.", 400));
+    cb(
+      new AppError(
+        "Only JPG, PNG, WEBP, GIF, BMP, AVIF, HEIC or HEIF images are allowed.",
+        400
+      )
+    );
     return;
   }
 
   cb(null, true);
 }
 
-function flattenUploadedFiles(req: Request) {
+function flattenUploadedFiles(req: Request): Express.Multer.File[] {
   if (!req.files) return req.file ? [req.file] : [];
 
   if (Array.isArray(req.files)) {
@@ -131,20 +173,35 @@ function replaceExtension(filename: string, ext: string) {
 }
 
 async function convertUploadedFile(file: Express.Multer.File) {
-  // Cloudinary uploads already return a remote URL in file.path.
-  // Do not run Sharp or fs operations on remote URLs.
-  if (!file.path || isRemoteUrl(file.path)) return;
+  const uploadedFile = file as UploadedImageFile;
 
-  const ext = path.extname(file.filename).toLowerCase();
+  /**
+   * Cloudinary uploads already return a remote URL in file.path.
+   * Do not run Sharp or fs operations on remote URLs.
+   */
+  if (!uploadedFile.path || isRemoteUrl(uploadedFile.path)) return;
+
+  /**
+   * FIX:
+   * uploadedFile.filename can be undefined in TypeScript,
+   * so safely derive filename from file.path if filename is missing.
+   */
+  const currentFilename = uploadedFile.filename || path.basename(uploadedFile.path);
+
+  if (!currentFilename) {
+    throw new AppError("Uploaded image filename is missing.", 400);
+  }
+
+  const ext = path.extname(currentFilename).toLowerCase();
 
   if (!conversionExtensions.has(ext)) return;
 
   const nextExt = isQrField(file.fieldname) ? ".png" : ".webp";
-  const nextFilename = replaceExtension(file.filename, nextExt);
-  const nextPath = path.join(path.dirname(file.path), nextFilename);
+  const nextFilename = replaceExtension(currentFilename, nextExt);
+  const nextPath = path.join(path.dirname(uploadedFile.path), nextFilename);
 
   try {
-    const pipeline = sharp(file.path).rotate();
+    const pipeline = sharp(uploadedFile.path).rotate();
 
     if (isQrField(file.fieldname)) {
       await pipeline
@@ -170,20 +227,28 @@ async function convertUploadedFile(file: Express.Multer.File) {
 
       file.mimetype = "image/webp";
     }
-  } catch {
-    removeLocalFileIfExists(file.path);
+  } catch (error) {
+    removeLocalFileIfExists(uploadedFile.path);
+
+    console.error("IMAGE_CONVERSION_ERROR:", {
+      fieldname: file.fieldname,
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+      message: error instanceof Error ? error.message : String(error)
+    });
+
     throw new AppError(
-      "HEIC images are not supported by this server. Please upload JPG, PNG, or WEBP.",
+      "This image format is not supported by the server. Please upload JPG, PNG, or WEBP.",
       400
     );
   }
 
-  removeLocalFileIfExists(file.path);
+  removeLocalFileIfExists(uploadedFile.path);
 
-  file.filename = nextFilename;
-  file.path = nextPath;
-  file.destination = path.dirname(nextPath);
-  file.size = fs.statSync(nextPath).size;
+  uploadedFile.filename = nextFilename;
+  uploadedFile.path = nextPath;
+  uploadedFile.destination = path.dirname(nextPath);
+  uploadedFile.size = fs.statSync(nextPath).size;
 }
 
 export async function processUploadedImages(
@@ -203,7 +268,7 @@ export async function processUploadedImages(
         throw new AppError(
           isQrField(file.fieldname)
             ? "QR image size must be below 3 MB."
-            : "Image size must be below 5 MB.",
+            : "Court image size must be below 5 MB.",
           400
         );
       }
@@ -216,7 +281,7 @@ export async function processUploadedImages(
         throw new AppError(
           isQrField(file.fieldname)
             ? "QR image size must be below 3 MB."
-            : "Image size must be below 5 MB.",
+            : "Court image size must be below 5 MB.",
           400
         );
       }
@@ -226,15 +291,27 @@ export async function processUploadedImages(
         isQrField(file.fieldname) ? "qr" : "court"
       );
 
-      // Important production debug log for Render.
-      console.log("[upload]", {
-        fieldname: file.fieldname,
-        originalName: file.originalname,
-        mimetype: file.mimetype,
-        size: file.size,
-        storageMode: isCloudinaryConfigured ? "cloudinary" : "local",
-        savedUrl
-      });
+      if (process.env.NODE_ENV === "development") {
+        console.log("[upload]", {
+          fieldname: file.fieldname,
+          originalName: file.originalname,
+          mimetype: file.mimetype,
+          size: file.size,
+          storageMode: isCloudinaryConfigured ? "cloudinary" : "local",
+          path: file.path,
+          filename: file.filename,
+          savedUrl
+        });
+      }
+
+      if (!savedUrl) {
+        throw new AppError(
+          isQrField(file.fieldname)
+            ? "QR image upload failed. Please upload JPG, PNG, or WEBP."
+            : "Court image upload failed. Please upload JPG, PNG, or WEBP.",
+          400
+        );
+      }
     }
 
     next();
@@ -243,31 +320,30 @@ export async function processUploadedImages(
   }
 }
 
+/**
+ * Set multer limit to 5 MB.
+ * QR-specific 3 MB validation is handled inside processUploadedImages.
+ */
 export const courtImageUpload = multer({
   storage,
   fileFilter: imageFileFilter,
-  limits: { fileSize: courtImageMaxBytes }
+  limits: {
+    fileSize: courtImageMaxBytes
+  }
 });
 
 export function getUploadedFileUrl(
   file: Express.Multer.File | undefined,
   type: "court" | "qr"
-) {
+): string | null {
   if (!file) return null;
 
-  const uploadedFile = file as Express.Multer.File & {
-    path?: string;
-    secure_url?: string;
-    url?: string;
-    filename?: string;
-  };
+  const uploadedFile = file as UploadedImageFile;
 
-  // Cloudinary usually stores uploaded image URL in file.path.
   if (uploadedFile.path && isRemoteUrl(uploadedFile.path)) {
     return uploadedFile.path;
   }
 
-  // Extra safety for different Cloudinary response formats.
   if (uploadedFile.secure_url && isRemoteUrl(uploadedFile.secure_url)) {
     return uploadedFile.secure_url;
   }
@@ -276,7 +352,6 @@ export function getUploadedFileUrl(
     return uploadedFile.url;
   }
 
-  // Local fallback for development.
   if (uploadedFile.filename) {
     return type === "qr"
       ? `/uploads/qr/${uploadedFile.filename}`
