@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import BackButton from "@/components/ui/BackButton";
-import { getAdminSettings, updateAdminSettings, updateAdminPaymentSettings, uploadAdminPaymentQr, type PlatformSettings } from "@/lib/api";
+import { downloadAdminBackup, getAdminSettings, updateAdminSettings, updateAdminPaymentSettings, uploadAdminPaymentQr, type PlatformSettings } from "@/lib/api";
 import ImageWithFallback from "@/components/ui/ImageWithFallback";
 import { getImageUrl } from "@/lib/image";
 import { imageAccept, validateImageFile } from "@/lib/upload";
@@ -12,6 +12,7 @@ export default function AdminSettingsPage() {
   const [form, setForm] = useState<Partial<PlatformSettings>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [backupLoading, setBackupLoading] = useState(false);
   const [qrFile, setQrFile] = useState<File | null>(null);
 
   useEffect(() => {
@@ -44,55 +45,92 @@ export default function AdminSettingsPage() {
     }
   }
 
+  async function downloadBackup() {
+    setBackupLoading(true);
+    try {
+      const { blob, contentDisposition } = await downloadAdminBackup();
+      const filename =
+        contentDisposition?.match(/filename="(.+)"/)?.[1] ||
+        `badminton-backup-${new Date().toISOString().slice(0, 19).replace("T", "-").replace(/:/g, "-")}.json`;
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success("Backup downloaded successfully.");
+    } catch {
+      toast.error("Backup failed. Please try again.");
+    } finally {
+      setBackupLoading(false);
+    }
+  }
+
   return (
     <main className="page-shell max-w-3xl">
       <BackButton fallback="/admin/dashboard" />
       <h1 className="text-3xl font-bold text-slate-950 dark:text-white">Admin Settings</h1>
       <p className="mt-2 text-slate-600 dark:text-slate-300">Configure platform UPI and owner commission policy.</p>
       {loading ? <p className="mt-6 surface-card">Loading settings...</p> : (
-        <section className="mt-6 space-y-4 surface-card">
-          <input className="field" placeholder="Admin UPI ID" value={form.adminUpiId ?? ""} onChange={(e) => setForm({ ...form, adminUpiId: e.target.value })} />
-          <input className="field" placeholder="Admin UPI Name" value={form.adminUpiName ?? ""} onChange={(e) => setForm({ ...form, adminUpiName: e.target.value })} />
-          <div className="rounded-lg border border-slate-200 p-4 dark:border-slate-800">
-            <h2 className="text-lg font-semibold text-slate-950 dark:text-white">Platform Payment UPI</h2>
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
-              <input className="field" placeholder="Platform UPI ID" value={form.platformUpiId ?? ""} onChange={(e) => setForm({ ...form, platformUpiId: e.target.value })} />
-              <input className="field" placeholder="Account name" value={form.platformAccountName ?? ""} onChange={(e) => setForm({ ...form, platformAccountName: e.target.value })} />
-              <input
-                className="field sm:col-span-2"
-                type="file"
-                accept={imageAccept}
-                onChange={(event) => {
-                  const file = event.target.files?.[0] ?? null;
-                  const validationError = file ? validateImageFile(file, "qr") : null;
-                  if (validationError) {
-                    toast.error(validationError);
-                    event.currentTarget.value = "";
-                    return;
-                  }
-                  setQrFile(file);
-                }}
-              />
-            </div>
-            {form.platformQrImageUrl && (
-              <div className="relative mt-4 h-48 w-48 overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-slate-800">
-                <ImageWithFallback src={getImageUrl(form.platformQrImageUrl)} alt="Platform QR" placeholder="No QR uploaded" contain />
+        <div className="mt-6 space-y-4">
+          <section className="space-y-4 surface-card">
+            <input className="field" placeholder="Admin UPI ID" value={form.adminUpiId ?? ""} onChange={(e) => setForm({ ...form, adminUpiId: e.target.value })} />
+            <input className="field" placeholder="Admin UPI Name" value={form.adminUpiName ?? ""} onChange={(e) => setForm({ ...form, adminUpiName: e.target.value })} />
+            <div className="rounded-lg border border-slate-200 p-4 dark:border-slate-800">
+              <h2 className="text-lg font-semibold text-slate-950 dark:text-white">Platform Payment UPI</h2>
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <input className="field" placeholder="Platform UPI ID" value={form.platformUpiId ?? ""} onChange={(e) => setForm({ ...form, platformUpiId: e.target.value })} />
+                <input className="field" placeholder="Account name" value={form.platformAccountName ?? ""} onChange={(e) => setForm({ ...form, platformAccountName: e.target.value })} />
+                <input
+                  className="field sm:col-span-2"
+                  type="file"
+                  accept={imageAccept}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null;
+                    const validationError = file ? validateImageFile(file, "qr") : null;
+                    if (validationError) {
+                      toast.error(validationError);
+                      event.currentTarget.value = "";
+                      return;
+                    }
+                    setQrFile(file);
+                  }}
+                />
               </div>
-            )}
-          </div>
-          <div className="grid gap-4 sm:grid-cols-3">
-            <label className="text-sm font-semibold">Normal commission %
-              <input className="field mt-2" type="number" min={0} max={100} value={form.commissionPercent ?? 15} onChange={(e) => setForm({ ...form, commissionPercent: Number(e.target.value) })} />
-            </label>
-            <label className="text-sm font-semibold">Penalty commission %
-              <input className="field mt-2" type="number" min={0} max={100} value={form.penaltyCommissionPercent ?? 20} onChange={(e) => setForm({ ...form, penaltyCommissionPercent: Number(e.target.value) })} />
-            </label>
-            <label className="text-sm font-semibold">Due window days
-              <input className="field mt-2" type="number" min={1} max={15} value={form.commissionDueWindowDays ?? 5} onChange={(e) => setForm({ ...form, commissionDueWindowDays: Number(e.target.value) })} />
-            </label>
-          </div>
-          <button className="btn-primary" disabled={saving} onClick={save}>{saving ? "Saving..." : "Save Settings"}</button>
-        </section>
+              {form.platformQrImageUrl && (
+                <div className="relative mt-4 h-48 w-48 overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-slate-800">
+                  <ImageWithFallback src={getImageUrl(form.platformQrImageUrl)} alt="Platform QR" placeholder="No QR uploaded" contain />
+                </div>
+              )}
+            </div>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <label className="text-sm font-semibold">Normal commission %
+                <input className="field mt-2" type="number" min={0} max={100} value={form.commissionPercent ?? 15} onChange={(e) => setForm({ ...form, commissionPercent: Number(e.target.value) })} />
+              </label>
+              <label className="text-sm font-semibold">Penalty commission %
+                <input className="field mt-2" type="number" min={0} max={100} value={form.penaltyCommissionPercent ?? 20} onChange={(e) => setForm({ ...form, penaltyCommissionPercent: Number(e.target.value) })} />
+              </label>
+              <label className="text-sm font-semibold">Due window days
+                <input className="field mt-2" type="number" min={1} max={15} value={form.commissionDueWindowDays ?? 5} onChange={(e) => setForm({ ...form, commissionDueWindowDays: Number(e.target.value) })} />
+              </label>
+            </div>
+            <button className="btn-primary" disabled={saving} onClick={save}>{saving ? "Saving..." : "Save Settings"}</button>
+          </section>
+
+          <section className="space-y-4 surface-card">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-950 dark:text-white">Manual Data Backup</h2>
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                Download a JSON backup of users, owners, admins, courts, bookings, payments, settlements, and platform records.
+              </p>
+            </div>
+            <button className="btn-secondary w-full sm:w-auto" type="button" disabled={backupLoading} onClick={downloadBackup}>
+              {backupLoading ? "Preparing backup..." : "Download Backup"}
+            </button>
+          </section>
+        </div>
       )}
     </main>
   );

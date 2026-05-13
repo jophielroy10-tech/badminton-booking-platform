@@ -30,8 +30,11 @@ export default function AdminCourtsPage() {
   const [courts, setCourts] = useState<Court[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [activeTab, setActiveTab] = useState<(typeof tabs)[number][0]>("PENDING_APPROVAL");
+  const [approvingId, setApprovingId] = useState<string | null>(null);
   const [rejecting, setRejecting] = useState<Court | null>(null);
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [viewing, setViewing] = useState<Court | null>(null);
   const [deletingCourt, setDeletingCourt] = useState<Court | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -64,17 +67,25 @@ export default function AdminCourtsPage() {
   const visibleCourts = useMemo(() => courts.filter((court) => court.status === activeTab), [courts, activeTab]);
 
   async function approve(id: string) {
+    setApprovingId(id);
+    setActionError("");
     try {
       await approveAdminCourt(id);
       toast.success("Court approved successfully");
       await load();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to approve court");
+      const message = err instanceof Error ? err.message : "Failed to approve court";
+      setActionError(message);
+      toast.error(message);
+    } finally {
+      setApprovingId(null);
     }
   }
 
   async function reject() {
     if (!rejecting) return;
+    setRejectingId(rejecting.id);
+    setActionError("");
     try {
       await rejectAdminCourt(rejecting.id, reason);
       toast.success("Court rejected");
@@ -82,7 +93,11 @@ export default function AdminCourtsPage() {
       setReason("");
       await load();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to reject court");
+      const message = err instanceof Error ? err.message : "Failed to reject court";
+      setActionError(message);
+      toast.error(message);
+    } finally {
+      setRejectingId(null);
     }
   }
 
@@ -138,6 +153,7 @@ export default function AdminCourtsPage() {
         </div>
       )}
       {error && <p className="mt-6 rounded-md bg-red-50 p-4 text-red-700">{error}</p>}
+      {actionError && <p className="mt-6 rounded-md bg-red-50 p-4 text-red-700">{actionError}</p>}
       {!loading && !error && visibleCourts.length === 0 && (
         <p className="mt-6 surface-card text-slate-600 dark:text-slate-300">
           {activeTab === "PENDING_APPROVAL" ? "No pending courts for approval" : "No courts in this section"}
@@ -181,8 +197,10 @@ export default function AdminCourtsPage() {
             <div className="mt-4 grid gap-2 sm:flex sm:flex-wrap">
               {court.status === "PENDING_APPROVAL" && (
                 <>
-                  <button className="btn-primary w-full sm:w-auto" disabled={!court.upiId || !court.upiQrImageUrl} title={!court.upiId || !court.upiQrImageUrl ? "UPI ID and QR code required before approval" : ""} onClick={() => approve(court.id)}>Accept</button>
-                  <button className="btn-secondary w-full sm:w-auto" onClick={() => setRejecting(court)}>Reject</button>
+                  <button className="btn-primary w-full sm:w-auto" disabled={approvingId === court.id || !court.upiId || !court.upiQrImageUrl} title={!court.upiId || !court.upiQrImageUrl ? "UPI ID and QR code required before approval" : ""} onClick={() => approve(court.id)}>
+                    {approvingId === court.id ? "Accepting..." : "Accept"}
+                  </button>
+                  <button className="btn-secondary w-full sm:w-auto" disabled={rejectingId === court.id} onClick={() => setRejecting(court)}>Reject</button>
                 </>
               )}
               <Link className="btn-secondary w-full sm:w-auto" href={`/admin/courts/${court.id}`}>View Details</Link>
@@ -198,7 +216,7 @@ export default function AdminCourtsPage() {
         <textarea className="field mt-4 min-h-28" placeholder="Rejection reason" value={reason} onChange={(e) => setReason(e.target.value)} />
         <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <button className="btn-secondary" onClick={() => setRejecting(null)}>Back</button>
-          <button className="btn-primary" onClick={reject}>Reject Court</button>
+          <button className="btn-primary" disabled={Boolean(rejectingId)} onClick={reject}>{rejectingId ? "Rejecting..." : "Reject Court"}</button>
         </div>
       </Modal>
 

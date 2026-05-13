@@ -811,6 +811,26 @@ export async function updateAdminSettings(payload: Partial<PlatformSettings>) {
   return apiRequest<PlatformSettings>("/admin/settings", { method: "PATCH", body: JSON.stringify(payload) });
 }
 
+export async function downloadAdminBackup() {
+  const token = getToken();
+  const response = await fetch(`${API_URL}/admin/backup`, {
+    method: "GET",
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    }
+  });
+
+  if (!response.ok) {
+    const data = await readResponse(response);
+    throw new Error(data?.message || "Backup failed");
+  }
+
+  return {
+    blob: await response.blob(),
+    contentDisposition: response.headers.get("Content-Disposition")
+  };
+}
+
 export async function getAdminSettlementSummary(params: { month?: number; year?: number } = {}) {
   return apiRequest<SettlementSummary>(`/admin/settlements/summary${queryString(params)}`);
 }
@@ -915,7 +935,10 @@ export async function getAdminAuditLogs() {
 }
 
 export async function approveAdminCourt(id: string) {
-  return apiRequest<Court>(`/admin/courts/${id}/approve`, { method: "PATCH" });
+  return apiRequest<Court>(`/admin/courts/${id}/approve`, {
+    method: "PATCH",
+    body: JSON.stringify({})
+  });
 }
 
 export async function updateAdminCourtUpi(id: string, payload: FormData) {

@@ -14,6 +14,77 @@ import { getUploadedFileUrl } from "../middleware/upload.middleware.js";
 
 const ADMIN_ACCOUNT_LIMIT = 2;
 
+const backupUserSelect = {
+  id: true,
+  name: true,
+  email: true,
+  role: true,
+  status: true,
+  walletBalance: true,
+  isSuspended: true,
+  deletedAt: true,
+  createdAt: true,
+  updatedAt: true
+} as const;
+
+const backupBookingSelect = {
+  id: true,
+  userId: true,
+  courtId: true,
+  slotId: true,
+  status: true,
+  expiresAt: true,
+  idempotencyKey: true,
+  checkedIn: true,
+  checkedInAt: true,
+  createdAt: true,
+  updatedAt: true
+} as const;
+
+const backupPaymentSelect = {
+  id: true,
+  bookingId: true,
+  userId: true,
+  amount: true,
+  platformFee: true,
+  gst: true,
+  discount: true,
+  finalAmount: true,
+  currency: true,
+  status: true,
+  provider: true,
+  upiId: true,
+  upiQrImageUrl: true,
+  utrNumber: true,
+  ownerId: true,
+  userSubmittedAt: true,
+  ownerVerifiedAt: true,
+  ownerRejectedAt: true,
+  ownerRejectionReason: true,
+  razorpayOrderId: true,
+  razorpayPaymentId: true,
+  createdAt: true,
+  updatedAt: true
+} as const;
+
+const backupOtpVerificationSelect = {
+  id: true,
+  email: true,
+  purpose: true,
+  attempts: true,
+  expiresAt: true,
+  createdAt: true
+} as const;
+
+function backupFilename(date = new Date()) {
+  const stamp = date.toISOString().slice(0, 19).replace("T", "-").replace(/:/g, "-");
+  return `badminton-backup-${stamp}.json`;
+}
+
+function countRecords(data: Record<string, unknown[]>) {
+  return Object.fromEntries(Object.entries(data).map(([key, value]) => [key, value.length]));
+}
+
 const adminSafeUserSelect = {
   id: true,
   name: true,
@@ -185,6 +256,109 @@ export const uploadAdminPaymentQr = async (req: any, res: any) => {
     data: { platformQrImageUrl: uploadedUpiQrUrl(req, req.file) }
   });
   res.json({ success: true, message: "Platform QR uploaded", data: { ...data, platformQrImageUrl: toPublicQrImageUrl(req, data.platformQrImageUrl) } });
+};
+
+export const downloadBackup = async (req: any, res: any) => {
+  try {
+    const [
+      users,
+      courts,
+      courtImages,
+      courtSchedules,
+      slots,
+      bookings,
+      payments,
+      refunds,
+      walletTransactions,
+      otpVerifications,
+      reviews,
+      notifications,
+      platformSettings,
+      ownerEarnings,
+      ownerSettlements,
+      ownerMonthlySettlements
+    ] = await Promise.all([
+      prisma.user.findMany({ select: backupUserSelect, orderBy: { createdAt: "asc" } }),
+      prisma.court.findMany({ orderBy: { createdAt: "asc" } }),
+      prisma.courtImage.findMany({ orderBy: { createdAt: "asc" } }),
+      prisma.courtSchedule.findMany({ orderBy: { createdAt: "asc" } }),
+      prisma.slot.findMany({ orderBy: { createdAt: "asc" } }),
+      prisma.booking.findMany({ select: backupBookingSelect, orderBy: { createdAt: "asc" } }),
+      prisma.payment.findMany({ select: backupPaymentSelect, orderBy: { createdAt: "asc" } }),
+      prisma.refund.findMany({ orderBy: { createdAt: "asc" } }),
+      prisma.walletTransaction.findMany({ orderBy: { createdAt: "asc" } }),
+      prisma.oTPVerification.findMany({ select: backupOtpVerificationSelect, orderBy: { createdAt: "asc" } }),
+      prisma.review.findMany({ orderBy: { createdAt: "asc" } }),
+      prisma.notification.findMany({ orderBy: { createdAt: "asc" } }),
+      prisma.platformSetting.findMany({ orderBy: { createdAt: "asc" } }),
+      prisma.ownerEarning.findMany({ orderBy: { createdAt: "asc" } }),
+      prisma.ownerSettlement.findMany({ orderBy: { createdAt: "asc" } }),
+      prisma.ownerMonthlySettlement.findMany({ orderBy: { createdAt: "asc" } })
+    ]);
+
+    const data = {
+      users,
+      courts,
+      courtImages,
+      courtSchedules,
+      slots,
+      bookings,
+      payments,
+      refunds,
+      walletTransactions,
+      otpVerifications,
+      reviews,
+      memberships: [],
+      playersMatchmaking: [],
+      coaches: [],
+      tournaments: [],
+      notifications,
+      promoCodes: [],
+      ownerEarnings,
+      ownerSettlements,
+      ownerMonthlySettlements,
+      auditLogs: [] as any[],
+      platformSettings
+    };
+    const preAuditRecordCounts = countRecords(data);
+
+    await createAuditLog({
+      userId: req.user.id,
+      action: AUDIT_ACTIONS.ADMIN_GENERATED_BACKUP,
+      entity: "BACKUP",
+      metadata: {
+        tableCount: Object.keys(data).length,
+        recordCounts: preAuditRecordCounts
+      },
+      req
+    });
+
+    data.auditLogs = await prisma.auditLog.findMany({ orderBy: { createdAt: "asc" } });
+    const recordCounts = countRecords(data);
+    const generatedAt = new Date();
+    const backup = {
+      metadata: {
+        app: "Badminton Court Booking Platform",
+        backupVersion: "1.0",
+        generatedAt: generatedAt.toISOString(),
+        generatedBy: {
+          id: req.user.id,
+          email: req.user.email,
+          role: req.user.role
+        },
+        tableCount: Object.keys(data).length,
+        recordCounts
+      },
+      data
+    };
+
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${backupFilename(generatedAt)}"`);
+    res.status(200).send(JSON.stringify(backup, null, 2));
+  } catch (error) {
+    console.error("[admin backup] generation failed", { adminId: req.user?.id, error });
+    res.status(500).json({ success: false, message: "Unable to generate backup" });
+  }
 };
 
 export const adminUsers = async (_req: any, res: any) => {

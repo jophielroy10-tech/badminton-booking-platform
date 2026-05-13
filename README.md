@@ -369,9 +369,18 @@ GET   /api/admin/settlements/summary
 GET   /api/admin/settlements/:id
 PATCH /api/admin/settlements/:id/verify
 PATCH /api/admin/settlements/:id/reject
+GET   /api/admin/backup
 ```
 
 ## Manual Testing
+
+## Admin Backup
+
+- Admins can manually download a JSON backup from `/admin/settings`.
+- The backup includes users, owners, admins, courts, court images, slots, bookings, payments, refunds, wallet transactions, OTP metadata, reviews, notifications, settlements, owner earnings, platform settings, and audit logs.
+- Passwords, OTP hashes, environment secrets, sensitive auth tokens, and payment signatures are excluded.
+- The backup is generated on demand and downloaded as a JSON file named like `badminton-backup-YYYY-MM-DD-HH-mm-ss.json`.
+- Audit logs record `ADMIN_GENERATED_BACKUP` with table and record counts only, not the backup payload.
 
 ## Cancellation Charge System
 

@@ -11,6 +11,7 @@ import {
   adminCourtDetails,
   adminDashboard,
   debugCourtImages,
+  downloadBackup,
   getAdminSettings,
   getAdminPaymentSettings,
   adminOwners,
@@ -57,6 +58,7 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 export const adminRoutes = Router();
 
 adminRoutes.use(requireAuth, allowRoles(Role.ADMIN));
+adminRoutes.get("/backup", asyncHandler(downloadBackup));
 adminRoutes.get("/dashboard", asyncHandler(adminDashboard));
 adminRoutes.get("/settings", asyncHandler(getAdminSettings));
 adminRoutes.patch("/settings", asyncHandler(updateAdminSettings));

@@ -1,21 +1,27 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import BackButton from "@/components/ui/BackButton";
 import Modal from "@/components/ui/Modal";
 import { BookingCardSkeleton, Skeleton } from "@/components/ui/Skeleton";
-import { getAdminCourtDetails, updateAdminCourtUpi, type AdminCourtDetails } from "@/lib/api";
+import { approveAdminCourt, getAdminCourtDetails, getToken, rejectAdminCourt, updateAdminCourtUpi, type AdminCourtDetails } from "@/lib/api";
 import ImageWithFallback from "@/components/ui/ImageWithFallback";
 import { getImageUrl } from "@/lib/image";
 import { imageAccept, validateImageFile } from "@/lib/upload";
 
 export default function AdminCourtDetailsPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const [details, setDetails] = useState<AdminCourtDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [approving, setApproving] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
   const [editingUpi, setEditingUpi] = useState(false);
   const [upiId, setUpiId] = useState("");
   const [upiQrImage, setUpiQrImage] = useState<File | null>(null);
@@ -28,10 +34,56 @@ export default function AdminCourtDetailsPage() {
   }
 
   useEffect(() => {
+    const rawUser = localStorage.getItem("user");
+    const user = rawUser ? JSON.parse(rawUser) : null;
+    if (!getToken()) {
+      router.push("/login");
+      return;
+    }
+    if (user?.role !== "ADMIN") {
+      router.push("/");
+      return;
+    }
     load()
       .catch((err) => setError(err instanceof Error ? err.message : "Unable to load court details"))
       .finally(() => setLoading(false));
-  }, [params.id]);
+  }, [params.id, router]);
+
+  async function approve() {
+    if (!details) return;
+    setApproving(true);
+    setActionError("");
+    try {
+      await approveAdminCourt(details.court.id);
+      toast.success("Court approved successfully");
+      await load();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to approve court";
+      setActionError(message);
+      toast.error(message);
+    } finally {
+      setApproving(false);
+    }
+  }
+
+  async function reject() {
+    if (!details) return;
+    setRejecting(true);
+    setActionError("");
+    try {
+      await rejectAdminCourt(details.court.id, rejectReason);
+      toast.success("Court rejected");
+      setRejectModalOpen(false);
+      setRejectReason("");
+      await load();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to reject court";
+      setActionError(message);
+      toast.error(message);
+    } finally {
+      setRejecting(false);
+    }
+  }
 
   async function saveUpi() {
     if (!details) return;
@@ -54,6 +106,7 @@ export default function AdminCourtDetailsPage() {
       <BackButton fallback="/admin/courts" />
       {loading && <div className="grid gap-4"><Skeleton className="h-64 w-full" /><BookingCardSkeleton /></div>}
       {error && <p className="mt-6 rounded-md bg-red-50 p-4 text-red-700">{error}</p>}
+      {actionError && <p className="mt-6 rounded-md bg-red-50 p-4 text-red-700">{actionError}</p>}
       {!loading && !error && !details && <p className="surface-card text-slate-600 dark:text-slate-300">Court not found.</p>}
 
       {details && (
@@ -73,6 +126,15 @@ export default function AdminCourtDetailsPage() {
                   {details.court.upiId && details.court.upiQrImageUrl ? "UPI Ready" : "UPI Missing"}
                 </span>
               </div>
+              {details.court.status === "PENDING_APPROVAL" && (
+                <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                  <button className="btn-primary" disabled={approving || !details.court.upiId || !details.court.upiQrImageUrl} title={!details.court.upiId || !details.court.upiQrImageUrl ? "UPI ID and QR code required before approval" : ""} onClick={approve}>
+                    {approving ? "Approving..." : "Approve"}
+                  </button>
+                  <button className="btn-secondary" disabled={rejecting} onClick={() => setRejectModalOpen(true)}>Reject</button>
+                </div>
+              )}
+              {(!details.court.upiId || !details.court.upiQrImageUrl) && <p className="mt-2 rounded bg-amber-50 p-2 text-sm text-amber-800">UPI ID and QR code required before approval</p>}
               <div className="mt-5 grid gap-3 sm:grid-cols-2 md:grid-cols-3">
                 {(details.court.images?.length ? details.court.images : details.court.imageUrl ? [{ id: details.court.id, imageUrl: details.court.imageUrl, isPrimary: true, createdAt: "" }] : []).map((image) => (
                   <div key={image.id} className="relative aspect-video overflow-hidden rounded-lg bg-slate-100">
@@ -226,6 +288,13 @@ export default function AdminCourtDetailsPage() {
             <button className="btn-secondary" onClick={() => setEditingUpi(false)}>Cancel</button>
             <button className="btn-primary" onClick={saveUpi}>Save UPI</button>
           </div>
+        </div>
+      </Modal>
+      <Modal open={rejectModalOpen} title="Reject court" onClose={() => setRejectModalOpen(false)}>
+        <textarea className="field mt-4 min-h-28" placeholder="Rejection reason" value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} />
+        <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button className="btn-secondary" onClick={() => setRejectModalOpen(false)}>Back</button>
+          <button className="btn-primary" disabled={rejecting} onClick={reject}>{rejecting ? "Rejecting..." : "Reject Court"}</button>
         </div>
       </Modal>
     </main>
