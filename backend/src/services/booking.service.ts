@@ -3,6 +3,7 @@ import { prisma } from "../lib/prisma.js";
 import { AppError } from "../middleware/error.middleware.js";
 
 const HOLD_TTL_MS = 10 * 60 * 1000;
+const SLOT_UNAVAILABLE_MESSAGE = "Slot is already booked or unavailable.";
 
 function overlappingSlotWhere(courtId: string, startTime: Date, endTime: Date) {
   return {
@@ -30,7 +31,7 @@ async function findAvailableSlot(courtId: string, startTime: Date, endTime: Date
     include: { court: true }
   });
 
-  if (!slot) throw new AppError("Court is already booked for this time slot", 409);
+  if (!slot) throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
   return slot;
 }
 
@@ -42,7 +43,7 @@ async function ensureNoActiveBooking(slotId: string) {
     }
   });
 
-  if (activeBooking) throw new AppError("Court is already booked for this time slot", 409);
+  if (activeBooking) throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
 }
 
 export const createBookingHold = async (userId: string, courtId: string, startTime: Date, endTime: Date) => {
@@ -53,10 +54,11 @@ export const createBookingHold = async (userId: string, courtId: string, startTi
   const expiresAt = new Date(Date.now() + HOLD_TTL_MS);
 
   return prisma.$transaction(async (tx) => {
-    await tx.slot.update({
-      where: { id: slot.id },
+    const heldSlot = await tx.slot.updateMany({
+      where: { id: slot.id, status: "AVAILABLE" },
       data: { status: "HOLD", lockedBy: userId, lockedUntil: expiresAt }
     });
+    if (heldSlot.count !== 1) throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
 
     return tx.booking.create({
       data: {
@@ -108,18 +110,19 @@ export const confirmBooking = async (userId: string, bookingId: string, paymentI
       status: "CONFIRMED"
     }
   });
-  if (confirmedConflict) throw new AppError("Court is already booked for this time slot", 409);
+  if (confirmedConflict) throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
 
   return prisma.$transaction(async (tx) => {
+    const bookedSlot = await tx.slot.updateMany({
+      where: { id: booking.slotId, status: "HOLD", lockedBy: userId, lockedUntil: { gt: new Date() } },
+      data: { status: "BOOKED", lockedBy: null, lockedUntil: null }
+    });
+    if (bookedSlot.count !== 1) throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
+
     const confirmedBooking = await tx.booking.update({
       where: { id: booking.id },
       data: { status: "CONFIRMED" },
       include: { court: true, slot: true, payment: true }
-    });
-
-    await tx.slot.update({
-      where: { id: booking.slotId },
-      data: { status: "BOOKED", lockedBy: null, lockedUntil: null }
     });
 
     await tx.notification.create({

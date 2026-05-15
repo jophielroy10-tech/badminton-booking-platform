@@ -8,6 +8,16 @@ import { verifyWebhookSignature } from "../utils/razorpay.js";
 import { calculateOwnerEarning } from "../utils/platformSettings.js";
 import { normalizeCourtImages } from "../utils/imageUrl.js";
 
+const SLOT_UNAVAILABLE_MESSAGE = "Slot is already booked or unavailable.";
+
+type RazorpayPaymentEntity = {
+  id: string;
+  order_id: string;
+  amount: number;
+  currency: string;
+  status: string;
+};
+
 function createUpiLink(params: { upiId: string; courtName: string; amount: number; bookingId: string }) {
   const search = new URLSearchParams({
     pa: params.upiId,
@@ -139,7 +149,7 @@ export const paymentDetails = async (req: Request, res: Response) => {
   });
 };
 
-async function handlePaymentCaptured(entity: any, req: Request) {
+async function handlePaymentCaptured(entity: RazorpayPaymentEntity, req: Request) {
   const payment = await prisma.payment.findFirst({
     where: { razorpayOrderId: entity.order_id },
     include: { booking: { include: { slot: { include: { court: true } }, user: true } } }
@@ -158,6 +168,20 @@ async function handlePaymentCaptured(entity: any, req: Request) {
   });
 
   await prisma.$transaction(async (tx) => {
+    const bookedSlot = await tx.slot.updateMany({
+      where: {
+        id: payment.booking.slotId,
+        status: "HOLD",
+        lockedBy: payment.userId,
+        lockedUntil: { gt: new Date() }
+      },
+      data: { status: "BOOKED", lockedBy: null, lockedUntil: null }
+    });
+
+    if (bookedSlot.count !== 1) {
+      throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
+    }
+
     await tx.booking.update({
       where: { id: payment.bookingId },
       data: { status: "CONFIRMED", checkInOtp, qrToken }
@@ -165,10 +189,6 @@ async function handlePaymentCaptured(entity: any, req: Request) {
     await tx.payment.update({
       where: { id: payment.id },
       data: { status: "SUCCESS", razorpayPaymentId: entity.id }
-    });
-    await tx.slot.update({
-      where: { id: payment.booking.slotId },
-      data: { status: "BOOKED", lockedBy: null, lockedUntil: null }
     });
     await tx.ownerEarning.upsert({
       where: { bookingId: payment.bookingId },
@@ -218,18 +238,21 @@ async function handlePaymentCaptured(entity: any, req: Request) {
   ]);
 }
 
-async function handlePaymentFailed(entity: any, req: Request) {
+async function handlePaymentFailed(entity: RazorpayPaymentEntity, req: Request) {
   const payment = await prisma.payment.findFirst({
     where: { razorpayOrderId: entity.order_id },
     include: { booking: true }
   });
   if (!payment || payment.status !== "PENDING" || !payment.booking) return;
 
-  await prisma.$transaction([
-    prisma.payment.update({ where: { id: payment.id }, data: { status: "FAILED", razorpayPaymentId: entity.id } }),
-    prisma.booking.update({ where: { id: payment.bookingId }, data: { status: "FAILED" } }),
-    prisma.slot.update({ where: { id: payment.booking.slotId }, data: { status: "AVAILABLE", lockedBy: null, lockedUntil: null } })
-  ]);
+  await prisma.$transaction(async (tx) => {
+    await tx.payment.update({ where: { id: payment.id }, data: { status: "FAILED", razorpayPaymentId: entity.id } });
+    await tx.booking.update({ where: { id: payment.bookingId }, data: { status: "FAILED" } });
+    await tx.slot.updateMany({
+      where: { id: payment.booking.slotId, status: "HOLD", lockedBy: payment.userId },
+      data: { status: "AVAILABLE", lockedBy: null, lockedUntil: null }
+    });
+  });
 
   await Promise.all([
     createAuditLog({

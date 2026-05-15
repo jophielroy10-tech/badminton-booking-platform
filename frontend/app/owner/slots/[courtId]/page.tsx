@@ -155,7 +155,7 @@ export default function OwnerCourtSlotsPage() {
             <Stat label="Available" value={details.summary.available} tone="green" />
             <Stat label="Booked" value={details.summary.booked} tone="blue" />
             <Stat label="Blocked" value={details.summary.blocked} tone="red" />
-            <Stat label="Hold" value={details.summary.hold} tone="yellow" />
+            <Stat label="Held" value={details.summary.hold} tone="yellow" />
           </section>
 
           <section className="mt-6 grid gap-6 lg:grid-cols-[1fr_.75fr]">
@@ -277,7 +277,13 @@ function Badge({ status }: { status: Slot["status"] }) {
     BOOKED: "bg-blue-100 text-blue-800",
     BLOCKED: "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-200"
   };
-  return <span className={`rounded px-2 py-1 text-xs font-bold ${classes[status]}`}>{status}</span>;
+  const labels = {
+    AVAILABLE: "Available",
+    HOLD: "Held",
+    BOOKED: "Booked",
+    BLOCKED: "Blocked"
+  };
+  return <span className={`rounded px-2 py-1 text-xs font-bold ${classes[status]}`}>{labels[status]}</span>;
 }
 
 function time(value: string) {

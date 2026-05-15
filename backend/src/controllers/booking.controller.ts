@@ -1,5 +1,7 @@
 import { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
+import { BookingStatus } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { AppError } from "../middleware/error.middleware.js";
 import { AUDIT_ACTIONS, createAuditLog } from "../utils/audit.js";
@@ -12,10 +14,11 @@ import { calculateFinalAmount, calculateOwnerEarning } from "../utils/platformSe
 import { toPublicQrImageUrl } from "../utils/imageUrl.js";
 
 const HOLD_TTL_MS = 5 * 60 * 1000;
-const BLOCKING_CONFIRMED_BOOKING_STATUSES = ["CONFIRMED", "COMPLETED"] as const;
-const BLOCKING_PENDING_BOOKING_STATUSES = ["PENDING", "PENDING_PAYMENT"] as const;
+const BLOCKING_CONFIRMED_BOOKING_STATUSES: BookingStatus[] = ["CONFIRMED", "COMPLETED"];
+const BLOCKING_PENDING_BOOKING_STATUSES: BookingStatus[] = ["PENDING", "PENDING_PAYMENT"];
+const SLOT_UNAVAILABLE_MESSAGE = "Slot is already booked or unavailable.";
 
-async function findActiveBookingForSlot(tx: any, slotId: string, now = new Date()) {
+async function findActiveBookingForSlot(tx: Prisma.TransactionClient, slotId: string, now = new Date()) {
   return tx.booking.findFirst({
     where: {
       slotId,
@@ -31,21 +34,48 @@ async function findActiveBookingForSlot(tx: any, slotId: string, now = new Date(
   });
 }
 
-async function releaseExpiredBookingsForSlot(tx: any, slotId: string, now = new Date()) {
+async function releaseExpiredBookingsForSlot(tx: Prisma.TransactionClient, slotId: string, now = new Date()) {
   const expiredBookings = await tx.booking.findMany({
     where: {
       slotId,
       status: { in: BLOCKING_PENDING_BOOKING_STATUSES },
       expiresAt: { lte: now }
     },
-    include: { payment: true }
   });
 
   for (const booking of expiredBookings) {
     await tx.booking.update({ where: { id: booking.id }, data: { status: "EXPIRED" } });
-    if (booking.payment?.status === "PENDING") {
-      await tx.payment.update({ where: { id: booking.payment.id }, data: { status: "EXPIRED" } });
+    const payment = await tx.payment.findUnique({ where: { bookingId: booking.id }, select: { id: true, status: true } });
+    if (payment?.status === "PENDING") {
+      await tx.payment.update({ where: { id: payment.id }, data: { status: "EXPIRED" } });
     }
+  }
+}
+
+async function holdAvailableSlot(tx: Prisma.TransactionClient, slotId: string, userId: string, expiresAt: Date) {
+  const updated = await tx.slot.updateMany({
+    where: { id: slotId, status: "AVAILABLE" },
+    data: { status: "HOLD", lockedBy: userId, lockedUntil: expiresAt }
+  });
+
+  if (updated.count !== 1) {
+    throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
+  }
+}
+
+async function bookHeldSlot(tx: Prisma.TransactionClient, slotId: string, userId: string) {
+  const updated = await tx.slot.updateMany({
+    where: {
+      id: slotId,
+      status: "HOLD",
+      lockedBy: userId,
+      lockedUntil: { gt: new Date() }
+    },
+    data: { status: "BOOKED", lockedBy: null, lockedUntil: null }
+  });
+
+  if (updated.count !== 1) {
+    throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
   }
 }
 
@@ -116,7 +146,7 @@ export const createHold = async (req: Request, res: Response) => {
     });
   }
 
-  if (slot.status !== "AVAILABLE") throw new AppError("Slot is not available.", 400);
+  if (slot.status !== "AVAILABLE") throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
 
   const discount = couponCode ? 0 : 0;
   const amountDetails = await calculateFinalAmount(Number(slot.price), discount);
@@ -143,18 +173,15 @@ export const createHold = async (req: Request, res: Response) => {
       currentSlot.lockedBy = null;
       currentSlot.lockedUntil = null;
     } else if (currentSlot.status !== "AVAILABLE") {
-      throw new AppError("Slot is not available.", 400);
+      throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
     }
 
     const activeBooking = await findActiveBookingForSlot(tx, currentSlot.id, now);
     if (activeBooking) {
-      throw new AppError("This slot is already booked or pending payment.", 409);
+      throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
     }
 
-    await tx.slot.update({
-      where: { id: currentSlot.id },
-      data: { status: "HOLD", lockedBy: userId, lockedUntil: expiresAt }
-    });
+    await holdAvailableSlot(tx, currentSlot.id, userId, expiresAt);
 
     const booking = await tx.booking.create({
       data: {
@@ -288,7 +315,7 @@ export const createUpiHold = async (req: Request, res: Response) => {
     });
   }
 
-  if (slot.status !== "AVAILABLE") throw new AppError("Slot is not available.", 400);
+  if (slot.status !== "AVAILABLE") throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
 
   const amountDetails = await calculateFinalAmount(Number(slot.price), 0);
   const expiresAt = new Date(Date.now() + HOLD_TTL_MS);
@@ -308,15 +335,15 @@ export const createUpiHold = async (req: Request, res: Response) => {
       currentSlot.lockedBy = null;
       currentSlot.lockedUntil = null;
     } else if (currentSlot.status !== "AVAILABLE") {
-      throw new AppError("Slot is not available.", 400);
+      throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
     }
 
     const activeBooking = await findActiveBookingForSlot(tx, currentSlot.id, now);
     if (activeBooking) {
-      throw new AppError("This slot is already booked or pending payment.", 409);
+      throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
     }
 
-    await tx.slot.update({ where: { id: currentSlot.id }, data: { status: "HOLD", lockedBy: userId, lockedUntil: expiresAt } });
+    await holdAvailableSlot(tx, currentSlot.id, userId, expiresAt);
     const booking = await tx.booking.create({
       data: {
         userId,
@@ -422,6 +449,8 @@ export const confirmBooking = async (req: Request, res: Response) => {
   });
 
   const confirmedBooking = await prisma.$transaction(async (tx) => {
+    await bookHeldSlot(tx, booking.slotId, userId);
+
     const updatedBooking = await tx.booking.update({
       where: { id: booking.id },
       data: { status: "CONFIRMED", checkInOtp, qrToken },
@@ -431,11 +460,6 @@ export const confirmBooking = async (req: Request, res: Response) => {
     await tx.payment.update({
       where: { id: booking.payment!.id },
       data: { status: "SUCCESS", razorpayPaymentId: razorpay_payment_id, razorpaySignature: razorpay_signature }
-    });
-
-    await tx.slot.update({
-      where: { id: booking.slotId },
-      data: { status: "BOOKED", lockedBy: null, lockedUntil: null }
     });
 
     await tx.ownerEarning.upsert({

@@ -9,6 +9,8 @@ import { normalizeCourtImages, toPublicImageUrl, toPublicQrImageUrl } from "../u
 import { mobileValidationMessage, normalizeIndianMobile } from "../validators/court.validator.js";
 import { getUploadedFileUrl } from "../middleware/upload.middleware.js";
 
+const SLOT_UNAVAILABLE_MESSAGE = "Slot is already booked or unavailable.";
+
 function uploadedCourtImageUrl(_req: Request, file: Express.Multer.File) {
   return getUploadedFileUrl(file, "court");
 }
@@ -725,6 +727,7 @@ export const verifyOwnerUpiPayment = async (req: Request, res: Response) => {
   if (payment.booking.court.ownerId !== req.user!.id) throw new AppError("You can verify only payments for your courts", 403);
   if (payment.status !== "USER_SUBMITTED") throw new AppError("Payment is not submitted by user", 400);
   if (payment.booking.status !== "PENDING_PAYMENT") throw new AppError("Booking is not pending payment", 400);
+  if (payment.booking.expiresAt && payment.booking.expiresAt <= new Date()) throw new AppError("Booking hold has expired", 400);
 
   const checkInOtp = Math.floor(100000 + Math.random() * 900000).toString();
   const qrToken = uuidv4();
@@ -736,13 +739,26 @@ export const verifyOwnerUpiPayment = async (req: Request, res: Response) => {
   });
 
   const booking = await prisma.$transaction(async (tx) => {
+    const bookedSlot = await tx.slot.updateMany({
+      where: {
+        id: payment.booking.slotId,
+        status: "HOLD",
+        lockedBy: payment.userId,
+        lockedUntil: { gt: new Date() }
+      },
+      data: { status: "BOOKED", lockedBy: null, lockedUntil: null }
+    });
+
+    if (bookedSlot.count !== 1) {
+      throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
+    }
+
     const updatedBooking = await tx.booking.update({
       where: { id: payment.bookingId },
       data: { status: "CONFIRMED", checkInOtp, qrToken },
       include: { court: true, slot: true, payment: true, user: true }
     });
     await tx.payment.update({ where: { id: payment.id }, data: { status: "SUCCESS", ownerVerifiedAt: new Date() } });
-    await tx.slot.update({ where: { id: payment.booking.slotId }, data: { status: "BOOKED", lockedBy: null, lockedUntil: null } });
     await tx.ownerEarning.upsert({
       where: { bookingId: payment.bookingId },
       update: { ...ownerEarning, courtId: payment.booking.courtId, paymentId: payment.id, status: "PENDING" },
