@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
+import type { BookingStatus } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { AppError } from "../middleware/error.middleware.js";
 import { createAuditLog, AUDIT_ACTIONS } from "../utils/audit.js";
@@ -10,6 +11,7 @@ import { mobileValidationMessage, normalizeIndianMobile } from "../validators/co
 import { getUploadedFileUrl } from "../middleware/upload.middleware.js";
 
 const SLOT_UNAVAILABLE_MESSAGE = "Slot is already booked or unavailable.";
+const FINAL_BOOKING_STATUSES: BookingStatus[] = ["CONFIRMED", "CANCELLED", "FAILED", "EXPIRED", "REFUNDED", "COMPLETED"];
 
 function uploadedCourtImageUrl(_req: Request, file: Express.Multer.File) {
   return getUploadedFileUrl(file, "court");
@@ -726,7 +728,9 @@ export const verifyOwnerUpiPayment = async (req: Request, res: Response) => {
   if (payment.provider !== "DIRECT_UPI") throw new AppError("Only direct UPI payments can be verified here", 400);
   if (payment.booking.court.ownerId !== req.user!.id) throw new AppError("You can verify only payments for your courts", 403);
   if (payment.status !== "USER_SUBMITTED") throw new AppError("Payment is not submitted by user", 400);
-  if (payment.booking.status !== "PENDING_PAYMENT") throw new AppError("Booking is not pending payment", 400);
+  if (FINAL_BOOKING_STATUSES.includes(payment.booking.status)) {
+    throw new AppError(`Booking cannot be confirmed from ${payment.booking.status} status`, 400);
+  }
   const submittedBeforeExpiry = Boolean(payment.userSubmittedAt && payment.booking.expiresAt && payment.userSubmittedAt <= payment.booking.expiresAt);
   if (payment.booking.expiresAt && payment.booking.expiresAt <= new Date() && !submittedBeforeExpiry) {
     throw new AppError("Booking hold has expired", 400);
@@ -758,7 +762,7 @@ export const verifyOwnerUpiPayment = async (req: Request, res: Response) => {
 
     const updatedBooking = await tx.booking.update({
       where: { id: payment.bookingId },
-      data: { status: "CONFIRMED", checkInOtp, qrToken },
+      data: { status: "CONFIRMED", expiresAt: null, checkInOtp, qrToken },
       include: { court: true, slot: true, payment: true, user: true }
     });
     await tx.payment.update({ where: { id: payment.id }, data: { status: "SUCCESS", ownerVerifiedAt: new Date() } });
