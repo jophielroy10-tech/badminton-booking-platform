@@ -13,6 +13,8 @@ export default function OwnerPaymentsPage() {
   const [platformSettings, setPlatformSettings] = useState<Pick<PlatformSettings, "platformUpiId" | "platformQrImageUrl" | "platformAccountName"> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
 
   async function load() {
     const [response, settingsResponse] = await Promise.all([getOwnerPayments(), getOwnerPlatformPaymentSettings()]);
@@ -27,23 +29,35 @@ export default function OwnerPaymentsPage() {
   }, []);
 
   async function verify(id: string) {
+    setVerifyingId(id);
+    setError("");
     try {
       await verifyOwnerUpiPayment(id);
       toast.success("Payment verified");
       await load();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Unable to verify payment");
+      const message = err instanceof Error ? err.message : "Failed to confirm. Please try again.";
+      setError(message);
+      toast.error(message);
+    } finally {
+      setVerifyingId(null);
     }
   }
 
   async function reject(id: string) {
     const reason = window.prompt("Reason for rejection") || "Payment not found";
+    setRejectingId(id);
+    setError("");
     try {
       await rejectOwnerUpiPayment(id, reason);
       toast.success("Payment rejected");
       await load();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Unable to reject payment");
+      const message = err instanceof Error ? err.message : "Unable to reject payment";
+      setError(message);
+      toast.error(message);
+    } finally {
+      setRejectingId(null);
     }
   }
 
@@ -87,8 +101,12 @@ export default function OwnerPaymentsPage() {
                 </div>
                 {payment.status === "USER_SUBMITTED" && (
                   <div className="flex flex-col gap-2 sm:flex-row lg:flex-col">
-                    <button className="btn-primary w-full sm:w-auto lg:w-full" onClick={() => verify(payment.id)}>Confirm</button>
-                    <button className="btn-secondary w-full sm:w-auto lg:w-full" onClick={() => reject(payment.id)}>Reject</button>
+                    <button className="btn-primary w-full sm:w-auto lg:w-full" disabled={verifyingId === payment.id || rejectingId === payment.id} onClick={() => verify(payment.id)}>
+                      {verifyingId === payment.id ? "Confirming..." : "Confirm"}
+                    </button>
+                    <button className="btn-secondary w-full sm:w-auto lg:w-full" disabled={verifyingId === payment.id || rejectingId === payment.id} onClick={() => reject(payment.id)}>
+                      {rejectingId === payment.id ? "Rejecting..." : "Reject"}
+                    </button>
                   </div>
                 )}
               </div>

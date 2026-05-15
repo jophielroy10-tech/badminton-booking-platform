@@ -727,7 +727,10 @@ export const verifyOwnerUpiPayment = async (req: Request, res: Response) => {
   if (payment.booking.court.ownerId !== req.user!.id) throw new AppError("You can verify only payments for your courts", 403);
   if (payment.status !== "USER_SUBMITTED") throw new AppError("Payment is not submitted by user", 400);
   if (payment.booking.status !== "PENDING_PAYMENT") throw new AppError("Booking is not pending payment", 400);
-  if (payment.booking.expiresAt && payment.booking.expiresAt <= new Date()) throw new AppError("Booking hold has expired", 400);
+  const submittedBeforeExpiry = Boolean(payment.userSubmittedAt && payment.booking.expiresAt && payment.userSubmittedAt <= payment.booking.expiresAt);
+  if (payment.booking.expiresAt && payment.booking.expiresAt <= new Date() && !submittedBeforeExpiry) {
+    throw new AppError("Booking hold has expired", 400);
+  }
 
   const checkInOtp = Math.floor(100000 + Math.random() * 900000).toString();
   const qrToken = uuidv4();
@@ -744,7 +747,7 @@ export const verifyOwnerUpiPayment = async (req: Request, res: Response) => {
         id: payment.booking.slotId,
         status: "HOLD",
         lockedBy: payment.userId,
-        lockedUntil: { gt: new Date() }
+        ...(submittedBeforeExpiry ? {} : { OR: [{ lockedUntil: null }, { lockedUntil: { gt: new Date() } }] })
       },
       data: { status: "BOOKED", lockedBy: null, lockedUntil: null }
     });
@@ -808,14 +811,17 @@ export const rejectOwnerUpiPayment = async (req: Request, res: Response) => {
   if (payment.booking.court.ownerId !== req.user!.id) throw new AppError("You can reject only payments for your courts", 403);
   if (!["PENDING", "USER_SUBMITTED"].includes(payment.status)) throw new AppError("Payment cannot be rejected now", 400);
 
-  await prisma.$transaction([
-    prisma.payment.update({
+  await prisma.$transaction(async (tx) => {
+    await tx.payment.update({
       where: { id: payment.id },
       data: { status: "OWNER_REJECTED", ownerRejectedAt: new Date(), ownerRejectionReason: reason }
-    }),
-    prisma.booking.update({ where: { id: payment.bookingId }, data: { status: "FAILED" } }),
-    prisma.slot.update({ where: { id: payment.booking.slotId }, data: { status: "AVAILABLE", lockedBy: null, lockedUntil: null } })
-  ]);
+    });
+    await tx.booking.update({ where: { id: payment.bookingId }, data: { status: "FAILED" } });
+    await tx.slot.updateMany({
+      where: { id: payment.booking.slotId, status: "HOLD", lockedBy: payment.userId },
+      data: { status: "AVAILABLE", lockedBy: null, lockedUntil: null }
+    });
+  });
 
   await createAuditLog({
     userId: req.user!.id,

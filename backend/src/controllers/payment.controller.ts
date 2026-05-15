@@ -87,10 +87,31 @@ export const submitUpiPayment = async (req: Request, res: Response) => {
     throw new AppError("This UTR / transaction ID has already been used.", 409);
   }
 
-  const data = await prisma.payment.update({
-    where: { id: payment.id },
-    data: { status: "USER_SUBMITTED", utrNumber, userSubmittedAt: new Date() },
-    include: { booking: { include: { court: true, slot: true } } }
+  const data = await prisma.$transaction(async (tx) => {
+    const heldSlot = await tx.slot.updateMany({
+      where: {
+        id: payment.booking.slotId,
+        status: "HOLD",
+        lockedBy: payment.userId,
+        OR: [{ lockedUntil: null }, { lockedUntil: { gt: new Date() } }]
+      },
+      data: { lockedUntil: null }
+    });
+
+    if (heldSlot.count !== 1) {
+      throw new AppError(SLOT_UNAVAILABLE_MESSAGE, 409);
+    }
+
+    await tx.booking.update({
+      where: { id: payment.bookingId },
+      data: { expiresAt: null }
+    });
+
+    return tx.payment.update({
+      where: { id: payment.id },
+      data: { status: "USER_SUBMITTED", utrNumber, userSubmittedAt: new Date() },
+      include: { booking: { include: { court: true, slot: true } } }
+    });
   });
 
   await createAuditLog({
